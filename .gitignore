@@ -1,0 +1,4 @@
+data/
+venv/
+out/
+src/__pycache__/
