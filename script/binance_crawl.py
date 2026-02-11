@@ -753,10 +753,10 @@ def main():
                        default='all',
                        help='Type of data to fetch. Can be: all, spot, klines, mark_price, index_price, premium_index, funding_rate. '
                             'Multiple types can be comma-separated: spot,klines,mark_price')
-    parser.add_argument('--symbol',
+    parser.add_argument('--symbols',
                        type=str,
                        default='BTCUSDT',
-                       help='Trading pair symbol')
+                       help='Trading pair symbols (comma-separated). Example: BTCUSDT,ETHUSDT')
     parser.add_argument('--interval',
                        type=str,
                        default='1m',
@@ -788,6 +788,10 @@ def main():
 
     args = parser.parse_args()
 
+    # Parse symbols (comma-separated)
+    symbols = [s.strip() for s in args.symbols.split(',')]
+    print(f"Symbols: {', '.join(symbols)}")
+
     crawler = BinanceCrawler(
         data_dir=args.data_dir,
         rate_limit_delay=args.rate_limit_delay,
@@ -813,32 +817,42 @@ def main():
         data_types = requested_types
 
     print(f"Fetching data types: {', '.join(data_types)}")
-    print(f"Using parallel fetching with {len(data_types)} threads")
+    print(f"Execution: Sequential for symbols, parallel for data types")
     print("=" * 80)
 
-    # Fetch data types in parallel
-    with ThreadPoolExecutor(max_workers=len(data_types)) as executor:
-        # Submit all tasks
-        futures = {
-            executor.submit(
-                fetch_single_data_type,
-                crawler,
-                data_type,
-                args.symbol,
-                args.interval,
-                args.start_date,
-                args.end_date,
-                args.batch_size
-            ): data_type
-            for data_type in data_types
-        }
+    # Process each symbol sequentially
+    for symbol_idx, symbol in enumerate(symbols, 1):
+        print(f"\n{'#' * 80}")
+        print(f"# [{symbol_idx}/{len(symbols)}] Processing symbol: {symbol}")
+        print(f"{'#' * 80}\n")
 
-        # Process results as they complete
-        for future in as_completed(futures):
-            data_type, success, message = future.result()
-            print("\n" + "=" * 80)
-            print(f"[{data_type}] {message}")
-            print("=" * 80)
+        # Fetch data types in parallel for this symbol
+        with ThreadPoolExecutor(max_workers=len(data_types)) as executor:
+            # Submit all tasks
+            futures = {
+                executor.submit(
+                    fetch_single_data_type,
+                    crawler,
+                    data_type,
+                    symbol,
+                    args.interval,
+                    args.start_date,
+                    args.end_date,
+                    args.batch_size
+                ): data_type
+                for data_type in data_types
+            }
+
+            # Process results as they complete
+            for future in as_completed(futures):
+                data_type, success, message = future.result()
+                print("\n" + "=" * 80)
+                print(f"[{symbol}][{data_type}] {message}")
+                print("=" * 80)
+
+    print(f"\n{'#' * 80}")
+    print(f"# All symbols completed!")
+    print(f"{'#' * 80}")
 
 
 if __name__ == "__main__":
