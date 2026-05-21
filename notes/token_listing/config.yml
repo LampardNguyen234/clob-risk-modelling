@@ -1,0 +1,205 @@
+# All operational thresholds in one place. Override any value here;
+# the notebook falls back to these defaults if this section is absent.
+thresholds:
+  # Hard gate floors
+  fdmc_min: 100_000_000          # USD fully diluted market cap
+  exchange_score_min: 8          # weighted score: Tier-1 counts 2, Tier-2 counts 1
+  safety_conditional_min: 60    # safety score for conditional pass (14d preListing)
+
+  # Market score reference values (r_i): token scores full weight at r_i
+  # Depth: max single Tier-1/2 venue; Drawdown/Vol: anchored to Major IMR_base = 5%
+  metric_refs:
+    spot_depth:    10_000_000     # USD; weight 35
+    es95:          0.04          # 4% = IMR_base Prime; weight 25 (inverted, log-scaled)
+    book_spread:   0.0005        # fraction (0.05%); weight 15 (inverted)
+    spot_volume:   500_000_000   # USD 30d avg daily; weight 10
+    concentration: 0.80          # 1-HHI over Tier-1/2 only; weight 10; requires ~5 equally-weighted venues
+    parkinson_vol: 0.7642        # 4% x sqrt(365) ~ 76.4% ann. = IMR_base(Prime, 25x); weight 10 (inverted, log-scaled)
+
+  # Upper bounds for log-scaled metrics; score = 0 at v_max
+  metric_vmax:
+    es95:          0.20          # 20% = empirical ceiling for single-day tail loss
+    parkinson_vol: 3.00          # 300% ann. = empirical ceiling (LUNA/DOGE 2021 90d Parkinson vol)
+
+  # Weights must sum to 100
+  metric_weights:
+    spot_depth:    30
+    es95:          20
+    book_spread:   10
+    spot_volume:   20
+    concentration: 10
+    parkinson_vol: 10
+
+  # Score → tier boundaries (lower bound inclusive)
+  tier_scores:
+    Prime:     90
+    Major:     75
+    Mid-Cap:   60
+    Small-Cap: 45
+    Micro-Cap: 25
+
+  # Tokens with fewer OHLCV days than this receive a Micro-Cap ceiling regardless of score.
+  # Change to 365 to require a full year of history.
+  listing_age_min_days: 180
+
+# Exchange tier membership for exchange gate scoring.
+# Slugs must match CMC exchangeSlug values (lowercase, hyphenated).
+exchange_tiers:
+  # Tier classification: CG trust=10, or trust=9 + ≥13K BTC/day volume (≈$1B/day, May 2026).
+  # CMC exchangeSlug values: must match market-pairs response exactly.
+  tier1:
+    - binance
+    - coinbase-exchange
+    - okx
+    - bybit
+    - kraken
+    - hyperliquid  # on-chain CLOB; PoR/reputation checks not applicable to DEX
+  # Tier 2: trust >=8 + material vol, or top regulatory standing (bitstamp).
+  # Gate/Bitget: CG trust 9, high volume but not top-5 global by brand recognition.
+  # HTX included on volume (trust 7); MEXC capped here despite trust 9 due to wash-trade history.
+  tier2:
+    - gate
+    - bitget
+    - kucoin
+    - bitstamp
+    - htx
+    - mexc
+    - bingx
+    # upbit excluded: KRW-only pairs fail USD filter; contributes 0 to exchange score
+    # and market metrics for 15/16 tested tokens. Re-evaluate if Upbit adds USDT pairs.
+
+tokens:
+  - symbol: SOL
+    cmc_id: 5426
+    cmc_slug: solana
+    coingecko_id: solana
+    safety_score: 75
+    feed_grade: A
+
+  - symbol: BNB
+    cmc_id: 1839
+    cmc_slug: bnb
+    coingecko_id: binancecoin
+    safety_score: 75
+    feed_grade: A
+
+  - symbol: XRP
+    cmc_id: 52
+    cmc_slug: xrp
+    coingecko_id: ripple
+    safety_score: 75
+    feed_grade: A
+
+  - symbol: BTC
+    cmc_id: 1
+    cmc_slug: bitcoin
+    coingecko_id: bitcoin
+    safety_score: 95
+    feed_grade: A
+
+  - symbol: ETH
+    cmc_id: 1027
+    cmc_slug: ethereum
+    coingecko_id: ethereum
+    safety_score: 95
+    feed_grade: A
+
+  - symbol: DOGE
+    cmc_id: 74
+    cmc_slug: dogecoin
+    coingecko_id: dogecoin
+    safety_score: 75       # manual; reviewer fills this in
+    feed_grade: A          # Stork assumed Grade A (deferred)
+    # overrides:
+    #   volume30d: 1500000000   # USD; reason: CMC lag on 2026-05-20
+
+  - symbol: VVV
+    cmc_id: 35509
+    cmc_slug: venice-token
+    coingecko_id: venice-token
+    safety_score: 75
+    feed_grade: A
+
+  - symbol: TON
+    cmc_id: 11419
+    cmc_slug: toncoin
+    coingecko_id: the-open-network
+    safety_score: 78
+    feed_grade: A
+
+  - symbol: NEAR
+    cmc_id: 6535
+    cmc_slug: near-protocol
+    coingecko_id: near
+    safety_score: 80
+    feed_grade: A
+
+  - symbol: SUI
+    cmc_id: 20947
+    cmc_slug: sui
+    coingecko_id: sui
+    safety_score: 75
+    feed_grade: A
+
+  - symbol: HYPE
+    cmc_id: 32196
+    cmc_slug: hyperliquid
+    coingecko_id: hyperliquid
+    safety_score: 75
+    feed_grade: A
+
+  - symbol: TAO
+    cmc_id: 22974
+    cmc_slug: bittensor
+    coingecko_id: bittensor
+    safety_score: 75
+    feed_grade: A
+
+  - symbol: ZEC
+    cmc_id: 1437
+    cmc_slug: zcash
+    coingecko_id: zcash
+    safety_score: 75
+    feed_grade: A
+
+  - symbol: DASH
+    cmc_id: 131
+    cmc_slug: dash
+    coingecko_id: dash
+    safety_score: 75
+    feed_grade: A
+
+  - symbol: ONDO
+    cmc_id: 21159
+    cmc_slug: ondo-finance
+    coingecko_id: ondo-finance
+    safety_score: 75
+    feed_grade: A
+
+  - symbol: MON
+    cmc_id: 30495
+    cmc_slug: monad
+    coingecko_id: monad
+    safety_score: 75
+    feed_grade: A
+
+  - symbol: LIT
+    cmc_id: 39125
+    cmc_slug: lighter
+    coingecko_id: lighter
+    safety_score: 75
+    feed_grade: A
+
+  - symbol: MEGA
+    cmc_id: 38770
+    cmc_slug: megaeth
+    coingecko_id: megaeth
+    safety_score: 75
+    feed_grade: A
+
+  - symbol: PIPPIN
+    cmc_id: 35053
+    cmc_slug: pippin
+    coingecko_id: pippin
+    safety_score: 75
+    feed_grade: A
