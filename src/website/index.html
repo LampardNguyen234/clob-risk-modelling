@@ -1,0 +1,3804 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Token Listing Screener — RISEx</title>
+  <link rel="icon" href="data:," />
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap');
+
+    :root {
+      --bg:        #0a0b0f;
+      --surface:   #12141a;
+      --elevated:  #1a1d26;
+      --border:    #252836;
+      --orange:    #f97316;
+      --amber:     #fb923c;
+      --text:      #f1f5f9;
+      --muted:     #94a3b8;
+      --green:     #22c55e;
+      --red:       #ef4444;
+      --yellow:    #f59e0b;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      margin: 0;
+      height: 100vh;
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+    }
+
+    body::before {
+      content: '';
+      position: fixed; inset: 0;
+      background-image: radial-gradient(circle, rgba(249,115,22,0.06) 1px, transparent 1px);
+      background-size: 32px 32px;
+      pointer-events: none; z-index: 0;
+    }
+    header, #main-content { position: relative; z-index: 1; }
+
+    .mono { font-family: 'JetBrains Mono', 'Fira Code', 'Consolas', monospace; }
+
+    ::-webkit-scrollbar { width: 5px; height: 5px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: #252836; border-radius: 9999px; }
+    ::-webkit-scrollbar-thumb:hover { background: #374151; }
+
+    .token-card.active {
+      background: var(--elevated);
+      border-color: var(--orange) !important;
+    }
+    .token-card:hover:not(.active) {
+      background: #15171f;
+      border-color: #2d3042 !important;
+    }
+
+    .metric-row:hover { background: rgba(249,115,22,0.04); }
+    .metric-row { cursor: pointer; }
+
+    .gate-card {
+      background: var(--elevated);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 14px 16px;
+      display: flex; flex-direction: column; gap: 6px;
+    }
+
+    .accordion-content {
+      max-height: 0; overflow: hidden;
+      transition: max-height 0.3s ease, opacity 0.3s ease;
+      opacity: 0;
+    }
+    .accordion-content.open { max-height: 500px; opacity: 1; }
+
+    .exchange-badge {
+      background: rgba(96,165,250,0.10); border: 1px solid rgba(96,165,250,0.25);
+      border-radius: 6px; padding: 4px 10px;
+      font-size: 11px; font-weight: 700; color: #93c5fd;
+      text-transform: capitalize; white-space: nowrap;
+    }
+    .exchange-badge.t1 { background: rgba(249,115,22,0.12); border-color: rgba(249,115,22,0.35); color: var(--orange); }
+    .exchange-badge.t2 { background: rgba(96,165,250,0.10); border-color: rgba(96,165,250,0.28); color: #93c5fd; }
+
+    .tier-prime    { background: rgba(249,115,22,0.15); color: #f97316; border: 1px solid rgba(249,115,22,0.3); }
+    .tier-major    { background: rgba(59,130,246,0.12); color: #60a5fa; border: 1px solid rgba(59,130,246,0.25); }
+    .tier-midcap   { background: rgba(168,85,247,0.12); color: #c084fc; border: 1px solid rgba(168,85,247,0.25); }
+    .tier-smallcap { background: rgba(245,158,11,0.12); color: #f59e0b; border: 1px solid rgba(245,158,11,0.25); }
+    .tier-microcap { background: rgba(245,158,11,0.10); color: #d97706; border: 1px solid rgba(245,158,11,0.20); }
+    .tier-rejected { background: rgba(239,68,68,0.10);  color: #ef4444; border: 1px solid rgba(239,68,68,0.20); }
+
+    .header-line {
+      height: 1px;
+      background: linear-gradient(90deg, transparent, var(--orange), transparent);
+      opacity: 0.4;
+    }
+
+    #detail-panel { opacity: 1; transition: opacity 0.2s ease; }
+    #detail-panel.fade-out { opacity: 0; }
+
+    #left-panel {
+      width: 280px; min-width: 280px; flex-shrink: 0;
+      display: flex; flex-direction: column; height: 100%;
+      border-right: 1px solid var(--border); background: var(--surface);
+    }
+    #right-panel { flex: 1; overflow-y: auto; height: 100%; display: flex; align-items: flex-start; }
+    #detail-panel { flex: 1 1 900px; min-width: 0; }
+    #side-rail {
+      width: 560px;
+      flex: 0 0 560px;
+      padding: 28px 28px 28px 0;
+      position: sticky;
+      top: 0;
+      align-self: flex-start;
+    }
+    #main-content { display: flex; flex: 1; overflow: hidden; }
+
+    .config-row {
+      display: flex; justify-content: space-between; align-items: center;
+      padding: 10px 0; border-bottom: 1px solid var(--border);
+    }
+    .config-row:last-child { border-bottom: none; }
+
+    .filter-btn {
+      flex: 1; padding: 5px 0;
+      font-size: 11px; font-weight: 600; border-radius: 6px;
+      border: 1px solid var(--border); background: transparent;
+      color: var(--muted); cursor: pointer; transition: all 0.15s;
+      letter-spacing: 0.3px;
+    }
+    .filter-btn.active {
+      background: rgba(249,115,22,0.15);
+      border-color: rgba(249,115,22,0.4); color: var(--orange);
+    }
+    .filter-btn:hover:not(.active) { background: var(--elevated); color: var(--text); }
+
+    .icon-btn {
+      width: 34px;
+      height: 34px;
+      border-radius: 8px;
+      border: 1px solid var(--border);
+      background: var(--surface);
+      color: var(--muted);
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      transition: color 0.15s ease, border-color 0.15s ease, background 0.15s ease, opacity 0.15s ease;
+    }
+    .icon-btn:hover:not(:disabled) {
+      color: var(--orange);
+      border-color: rgba(249,115,22,0.45);
+      background: rgba(249,115,22,0.08);
+    }
+    .icon-btn:disabled {
+      cursor: wait;
+      opacity: 0.55;
+    }
+    .info-wrap { position: relative; display: inline-flex; align-items: center; }
+    .info-trigger {
+      width: 18px; height: 18px; border-radius: 50%;
+      border: 1px solid rgba(148,163,184,0.35);
+      background: rgba(148,163,184,0.08);
+      color: var(--muted); display: inline-flex; align-items: center; justify-content: center;
+      cursor: help; padding: 0;
+    }
+    .info-trigger:hover, .info-trigger:focus {
+      color: var(--orange); border-color: rgba(249,115,22,0.45);
+      outline: none;
+    }
+    .info-popover {
+      display: none; position: absolute; left: 0; top: 24px; z-index: 5;
+      width: 300px; padding: 12px 14px; border-radius: 8px;
+      background: #0e1016; border: 1px solid var(--border);
+      box-shadow: 0 14px 40px rgba(0,0,0,0.38);
+    }
+    .info-wrap:hover .info-popover, .info-wrap:focus-within .info-popover { display: block; }
+
+    @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .spinner {
+      width: 20px; height: 20px; border-radius: 50%;
+      border: 2px solid var(--border); border-top-color: var(--orange);
+      animation: spin 0.7s linear infinite; flex-shrink: 0;
+    }
+    .spinner-sm {
+      width: 12px; height: 12px; border-radius: 50%;
+      border: 1.5px solid var(--border); border-top-color: var(--muted);
+      animation: spin 0.7s linear infinite; flex-shrink: 0; display: inline-block;
+    }
+    .sync-btn {
+      width: 28px;
+      height: 28px;
+      border-radius: 8px;
+      border: 1px solid rgba(34,197,94,0.28);
+      background: rgba(34,197,94,0.08);
+      color: var(--green);
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      transition: background 0.15s ease, border-color 0.15s ease, transform 0.15s ease;
+    }
+    .sync-btn:hover:not(:disabled) {
+      background: rgba(34,197,94,0.14);
+      border-color: rgba(34,197,94,0.45);
+    }
+    .sync-btn:disabled {
+      cursor: wait;
+      opacity: 0.65;
+    }
+    .sync-btn svg { width: 15px; height: 15px; }
+    .sync-btn.refreshing svg { animation: spin 0.7s linear infinite; }
+    .settings-overlay {
+      display: none;
+      position: fixed;
+      inset: 0;
+      z-index: 20;
+      background: rgba(3, 5, 10, 0.72);
+      backdrop-filter: blur(8px);
+      align-items: flex-start;
+      justify-content: flex-end;
+      padding: 72px 24px 24px;
+    }
+    .settings-overlay.open { display: flex; }
+    .settings-panel {
+      width: min(560px, 100%);
+      max-height: calc(100vh - 96px);
+      overflow-y: auto;
+      background: #10131b;
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      box-shadow: 0 28px 70px rgba(0,0,0,0.45);
+    }
+    .settings-section {
+      padding: 16px 18px;
+      border-top: 1px solid var(--border);
+    }
+    .settings-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 10px;
+    }
+    .setting-field {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+    .setting-field label {
+      font-size: 10px;
+      color: var(--muted);
+      font-weight: 800;
+      letter-spacing: 0.45px;
+      text-transform: uppercase;
+    }
+    .setting-field input {
+      width: 100%;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      color: var(--text);
+      font: 700 13px 'JetBrains Mono', monospace;
+      padding: 9px 10px;
+      outline: none;
+    }
+    .setting-field input:focus {
+      border-color: rgba(249,115,22,0.55);
+      box-shadow: 0 0 0 2px rgba(249,115,22,0.10);
+    }
+    .setting-field input:disabled {
+      opacity: 0.7;
+      cursor: not-allowed;
+      background: #0d1017;
+    }
+    .settings-actions {
+      display: flex;
+      justify-content: flex-end;
+      gap: 8px;
+      padding: 14px 18px;
+      border-top: 1px solid var(--border);
+      background: rgba(26,29,38,0.72);
+    }
+    .text-btn {
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 8px 12px;
+      background: var(--surface);
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 800;
+      cursor: pointer;
+    }
+    .text-btn:hover { color: var(--text); border-color: #3a4054; }
+    .text-btn.primary {
+      color: #0a0b0f;
+      background: var(--orange);
+      border-color: var(--orange);
+    }
+    .rise-market-grid {
+      display: grid;
+      grid-template-columns: 22px minmax(86px,118px) 42px minmax(72px,1fr) 58px 68px 76px;
+      column-gap: 6px;
+      align-items: center;
+    }
+    .rise-market-head {
+      padding: 9px 14px 9px 8px;
+      border-bottom: 1px solid var(--border);
+    }
+    .rise-market-row {
+      padding: 0 14px 0 8px;
+      border-bottom: 1px solid var(--border);
+    }
+    .rise-market-status {
+      font-size: 9px;
+      font-weight: 800;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .rise-market-status.live { color: var(--green); }
+    .rise-market-status.post-only { color: var(--yellow); }
+    .rise-market-status.offline { color: var(--red); }
+
+    @media (max-width: 1280px) {
+      #right-panel { flex-direction: column; }
+      #detail-panel { width: 100%; }
+      #side-rail { width: 100%; flex: none; padding: 0 32px 28px; position: static; }
+    }
+
+    @media (max-width: 768px) {
+      body { overflow: auto; height: auto; }
+      #main-content { flex-direction: column; overflow: visible; }
+      #left-panel {
+        width: 100%; min-width: unset; height: auto; max-height: 320px;
+        border-right: none; border-bottom: 1px solid var(--border);
+      }
+      #right-panel { height: auto; overflow: visible; flex-direction: column; }
+      #side-rail { width: 100%; flex: none; padding: 0 32px 28px; position: static; }
+      .settings-grid { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+
+<header style="background:var(--surface);border-bottom:1px solid var(--border);flex-shrink:0;">
+  <div style="max-width:100%;padding:0 24px;height:56px;display:flex;align-items:center;justify-content:space-between;">
+    <div style="display:flex;align-items:center;gap:12px;">
+      <img src="https://www.rise.trade/assets/risex-big-logo.svg" alt="RISEx"
+           style="height:28px;width:auto;"
+           onerror="this.style.display='none';document.getElementById('logo-fallback').style.display='flex';" />
+      <div id="logo-fallback" style="display:none;align-items:center;gap:8px;">
+        <div style="width:32px;height:32px;border-radius:8px;background:linear-gradient(135deg,#f97316,#fb923c);display:flex;align-items:center;justify-content:center;font-weight:800;font-size:14px;color:#0a0b0f;">R</div>
+        <span style="font-weight:700;font-size:16px;color:var(--text);letter-spacing:-0.3px;">RISEx</span>
+      </div>
+      <div style="width:1px;height:18px;background:var(--border);margin:0 4px;"></div>
+      <span style="font-size:13px;color:var(--muted);font-weight:500;">Token Listing Screener</span>
+    </div>
+    <div style="display:flex;align-items:center;gap:12px;">
+      <span id="sync-stamp" style="font-size:11px;color:var(--muted);font-family:'JetBrains Mono',monospace;letter-spacing:0.3px;">LAST SYNC: —</span>
+      <button id="auto-refresh-btn" class="sync-btn" onclick="manualAutoRefresh()" title="Refresh now; auto-refreshes every 60s" aria-label="Refresh now; auto-refreshes every 60s">
+        <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a9 9 0 00-15.74-5.74L3 8"/>
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 3v5h5"/>
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 12a9 9 0 0015.74 5.74L21 16"/>
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M16 16h5v5"/>
+        </svg>
+      </button>
+      <div style="width:1px;height:16px;background:var(--border);"></div>
+      <div style="background:rgba(34,197,94,0.1);border:1px solid rgba(34,197,94,0.25);border-radius:20px;padding:4px 12px;font-size:11px;font-weight:600;color:var(--green);display:flex;align-items:center;gap:6px;">
+        <div style="width:6px;height:6px;border-radius:50%;background:var(--green);animation:pulse 2s infinite;"></div>
+        LIVE
+      </div>
+      <button class="icon-btn" onclick="openSettings()" title="Adjust scoring settings" aria-label="Adjust scoring settings">
+        <svg width="16" height="16" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"/>
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/>
+        </svg>
+      </button>
+    </div>
+  </div>
+  <div class="header-line"></div>
+</header>
+
+<div id="settings-overlay" class="settings-overlay" onclick="if(event.target===this) closeSettings();">
+  <div class="settings-panel" role="dialog" aria-modal="true" aria-labelledby="settings-title">
+    <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;padding:16px 18px;">
+      <div>
+        <h2 id="settings-title" style="font-size:15px;font-weight:800;color:var(--text);margin:0;">Settings</h2>
+        <div style="font-size:11px;color:var(--muted);margin-top:4px;">Updates cached scores and listing config without refetching market data.</div>
+      </div>
+      <button class="icon-btn" onclick="closeSettings()" title="Close settings" aria-label="Close settings">
+        <svg width="16" height="16" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
+        </svg>
+      </button>
+    </div>
+    <form id="settings-form" onsubmit="applySettings(event)">
+      <div id="settings-body"></div>
+      <div class="settings-actions">
+        <button type="button" class="text-btn" onclick="resetSettings()">Reset</button>
+        <button type="button" class="text-btn" onclick="closeSettings()">Cancel</button>
+        <button type="submit" class="text-btn primary">Apply</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<div id="main-content">
+
+  <!-- LEFT PANEL -->
+  <div id="left-panel">
+    <div style="padding:14px 12px 10px;flex-shrink:0;">
+      <div style="position:relative;">
+        <svg style="position:absolute;left:10px;top:50%;transform:translateY(-50%);width:14px;height:14px;color:var(--muted);" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/>
+        </svg>
+        <input id="search-input" type="text" placeholder="Search any token..."
+          style="width:100%;background:var(--elevated);border:1px solid var(--border);border-radius:8px;padding:8px 10px 8px 32px;font-size:13px;color:var(--text);outline:none;transition:border-color 0.2s;"
+          onfocus="this.style.borderColor='rgba(249,115,22,0.5)'"
+          onblur="this.style.borderColor='var(--border)'" />
+        <div id="search-spinner" style="display:none;position:absolute;right:10px;top:50%;transform:translateY(-50%);"><span class="spinner-sm"></span></div>
+      </div>
+      <div style="display:flex;gap:6px;margin-top:10px;">
+        <button class="filter-btn active" data-filter="all"      onclick="setFilter('all',this)">All</button>
+        <button class="filter-btn"        data-filter="passing"  onclick="setFilter('passing',this)">Passing</button>
+        <button class="filter-btn"        data-filter="rejected" onclick="setFilter('rejected',this)">Rejected</button>
+      </div>
+    </div>
+
+    <div style="padding:0 12px 6px;flex-shrink:0;display:flex;justify-content:space-between;align-items:center;">
+      <span id="list-count" style="font-size:10px;color:var(--muted);font-weight:600;letter-spacing:0.5px;text-transform:uppercase;"></span>
+      <span style="font-size:10px;color:var(--muted);font-weight:600;letter-spacing:0.5px;">SCORE</span>
+    </div>
+
+    <div id="token-list" style="flex:1;overflow-y:auto;padding:0 6px 8px;"></div>
+  </div>
+
+  <!-- RIGHT PANEL -->
+  <div id="right-panel">
+    <div id="detail-panel" style="padding:28px 32px;max-width:900px;"></div>
+    <aside id="side-rail"></aside>
+  </div>
+
+</div>
+
+<script>
+// ─── CONFIG (mirrors config.yml + notebook constants) ─────────────────────────
+const CFG = {
+  FDMC_MIN:         100_000_000,
+  SAFETY_PASS_MIN:  75,
+  SAFETY_COND_MIN:  60,
+  AGE_MIN_DAYS:     180,
+  EXPECTED_MIN_ORDER_USD: 10,
+
+  // PRIME_WHITELIST: only these can stay in Prime tier after scoring
+  PRIME_WHITELIST: new Set(['BTC', 'ETH']),
+
+  TIER1: new Set(['binance','coinbase-exchange','okx','bybit','kraken','hyperliquid']),
+  TIER2: new Set(['gate','bitget','kucoin','bitstamp','htx','mexc','bingx']),
+  USD_QUOTES: new Set(['USDT','USDC','USD','USDH']),
+
+  // CoinGecko market.identifier → CMC exchangeSlug (only differing entries)
+  CG_TO_CMC: {
+    'gdax':             'coinbase-exchange',
+    'okex':             'okx',
+    'bybit_spot':       'bybit',
+    'hyperliquid-spot': 'hyperliquid',
+    'huobi':            'htx',
+    'mxc':              'mexc',
+  },
+
+  // Metric reference values (full score at v = ref)
+  REFS:    { depth:10e6, vol:0.7642, es95:0.04, volume:500e6, conc:0.80, spread:0.0005 },
+  WEIGHTS: { depth:30,   vol:10,     es95:20,   volume:20,   conc:10,   spread:10 },
+  // Log-scaled metrics have a v_max above which score = 0
+  VMAXES:  { vol:3.00, es95:0.20 },
+
+  // Score → tier boundaries (>= threshold → tier)
+  TIERS: [[90,'Prime'],[75,'Major'],[60,'Mid-Cap'],[45,'Small-Cap'],[25,'Micro-Cap'],[0,'Rejected']],
+
+  // Tier parameters from notebook cell 2 TIER_PARAMS
+  TIER_PARAMS: {
+    'Prime':      { maxLev:25, imr:'4.00%',  mmr:'2.67%',  cmr:'1.78%',  oiLo:'$50M',  oiHi:'$120M' },
+    'Major':      { maxLev:20, imr:'5.00%',  mmr:'3.33%',  cmr:'2.22%',  oiLo:'$10M',  oiHi:'$20M'  },
+    'Mid-Cap':    { maxLev:10, imr:'10.00%', mmr:'6.67%',  cmr:'4.44%',  oiLo:'$2M',   oiHi:'$10M'  },
+    'Small-Cap':  { maxLev:5,  imr:'20.00%', mmr:'13.33%', cmr:'8.89%',  oiLo:'$1M',   oiHi:'$5M'   },
+    'Micro-Cap':  { maxLev:3,  imr:'33.33%', mmr:'22.22%', cmr:'14.81%', oiLo:'$1M',   oiHi:'$5M'   },
+    'Rejected':   { maxLev:'—', imr:'—',     mmr:'—',      cmr:'—',      oiLo:'—',    oiHi:'—'     },
+  },
+
+  // Feed grade → maximum tier ceiling
+  FEED_CEILING: { A:'Prime', B:'Major', C:'Small-Cap', D:'Micro-Cap', F:'Rejected' },
+  TIER_ORDER: ['Prime','Major','Mid-Cap','Small-Cap','Micro-Cap','Rejected'],
+};
+const TIER_NAMES = ['Prime', 'Major', 'Mid-Cap', 'Small-Cap', 'Micro-Cap'];
+const METRIC_REF_FIELDS = [
+  ['depth',  '2% Market Depth',        'USD'],
+  ['vol',    'Parkinson Volatility',   'decimal'],
+  ['es95',   'ES 95%',                 'decimal'],
+  ['volume', '30d Avg Daily Volume',   'USD/day'],
+  ['conc',   'Concentration (1-HHI)',  'decimal'],
+  ['spread', 'Avg Book Spread',        'decimal'],
+];
+const DEFAULT_SETTINGS = {
+  refs: { ...CFG.REFS },
+  tiers: Object.fromEntries(TIER_NAMES.map(name => {
+    const row = CFG.TIERS.find(([, tier]) => tier === name);
+    return [name, row ? row[0] : 0];
+  })),
+  tierParams: Object.fromEntries(TIER_NAMES.map(name => [name, { ...CFG.TIER_PARAMS[name] }])),
+  expectedMinOrderUsd: CFG.EXPECTED_MIN_ORDER_USD,
+};
+const ACTIVE_GATE_KEYS = ['fdmc', 'binance'];
+const STEP_SIZE_MIN_USD = 0.1;
+const STEP_SIZE_MAX_USD = 0.5;
+
+// ─── KNOWN TOKENS (from config.yml) ──────────────────────────────────────────
+// safety_score and feed_grade are manually reviewed by the Rise Labs team.
+// All other metrics are fetched live.
+const KNOWN = {
+  BTC:    { cgId:'bitcoin',          cmcId:1,     safetyScore:95, feedGrade:'A', rank:1   },
+  ETH:    { cgId:'ethereum',         cmcId:1027,  safetyScore:95, feedGrade:'A', rank:2   },
+  XRP:    { cgId:'ripple',           cmcId:52,    safetyScore:75, feedGrade:'A', rank:3   },
+  BNB:    { cgId:'binancecoin',      cmcId:1839,  safetyScore:75, feedGrade:'A', rank:4   },
+  SOL:    { cgId:'solana',           cmcId:5426,  safetyScore:75, feedGrade:'A', rank:5   },
+  DOGE:   { cgId:'dogecoin',         cmcId:74,    safetyScore:75, feedGrade:'A', rank:9   },
+  SUI:    { cgId:'sui',              cmcId:20947, safetyScore:75, feedGrade:'A', rank:11  },
+  HYPE:   { cgId:'hyperliquid',      cmcId:32196, safetyScore:75, feedGrade:'A', rank:12  },
+  TON:    { cgId:'the-open-network', cmcId:11419, safetyScore:78, feedGrade:'A', rank:13  },
+  NEAR:   { cgId:'near',             cmcId:6535,  safetyScore:80, feedGrade:'A', rank:20  },
+  TAO:    { cgId:'bittensor',        cmcId:22974, safetyScore:75, feedGrade:'A', rank:22  },
+  ONDO:   { cgId:'ondo-finance',     cmcId:21159, safetyScore:75, feedGrade:'A', rank:45  },
+  ZEC:    { cgId:'zcash',            cmcId:1437,  safetyScore:75, feedGrade:'A', rank:68  },
+  DASH:   { cgId:'dash',             cmcId:131,   safetyScore:75, feedGrade:'A', rank:80  },
+  MEGA:   { cgId:'megaeth',          cmcId:38770, safetyScore:75, feedGrade:'A', rank:150 },
+  MON:    { cgId:'monad',            cmcId:30495, safetyScore:75, feedGrade:'A', rank:120 },
+  LIT:    { cgId:'lighter',          cmcId:39125, safetyScore:75, feedGrade:'A', rank:200 },
+  VVV:    { cgId:'venice-token',     cmcId:35509, safetyScore:75, feedGrade:'A', rank:300 },
+  PIPPIN: { cgId:'pippin',           cmcId:35053, safetyScore:75, feedGrade:'A', rank:400 },
+};
+
+// Stablecoins and wrapped/liquid-staked tokens to exclude from the dynamic top-20 list.
+const EXCLUDE_IDS = new Set([
+  'tether','usd-coin','dai','binance-usd','trueusd','frax','usdd',
+  'first-digital-usd','ethena-usde','paypal-usd','usual-usd','usds',
+  'wrapped-bitcoin','wrapped-steth','staked-ether','coinbase-wrapped-staked-eth',
+  'wrapped-eeth','rocket-pool-eth','mantle-staked-ether','coinbase-wrapped-btc',
+  'weth','frax-ether','sfrxeth','staked-frax-ether',
+]);
+
+function isExcluded(coin) {
+  if (EXCLUDE_IDS.has(coin.id)) return true;
+  const n = (coin.name || '').toLowerCase();
+  return /^(wrapped |staked |bridged |liquid staked )/.test(n);
+}
+
+// Metric detail explanations for accordion
+const METRIC_DETAILS = {
+  depth: {
+    title: '2% Market Depth',
+    what: 'Haircut-weighted sum of (bid + ask) / 2 within ±2% of mid-price across Tier-1/2 exchanges. Tier-1 haircut = 1.0×, Tier-2 = 0.5×. Hyperliquid L2 book used when available; CoinGecko cost_to_move values as fallback.',
+    why: 'Thin books cause cascade insolvency. Forced liquidations hit the book, mark price moves, triggering further liquidations in a self-reinforcing spiral. Depth is the single metric with a direct causal link to vault solvency.',
+    formula: 'Σ h_e × (bid_e + ask_e) / 2   (h = 1.0 T1, 0.5 T2)',
+    hiB: true,
+  },
+  vol: {
+    title: 'Parkinson Volatility (90d ann.)',
+    what: 'Annualised Parkinson volatility from the trailing 90-day daily high-low range. ~5× more efficient than close-to-close because intraday ranges retain path information that closing prices discard.',
+    why: 'Secondary confirmation of daily margin buffer. Diverges from ES95 in two dangerous regimes: slow grinding bear (high drawdown, moderate daily vol) and sudden crash (high daily vol, moderate ES95).',
+    formula: 'σ_ann = √(365 / (4n · ln2) · Σ ln(H/L)²)',
+    hiB: false,
+  },
+  es95: {
+    title: 'ES 95% (Expected Shortfall)',
+    what: 'Mean of the worst 5% of daily log-return losses over the full available history (≥400d for established tokens). Uses all history, not just 90d, to maximise tail observations (5% of 400d = 20 events).',
+    why: 'Direct IMR stress test. If ES95 exceeds IMR, positions that were fully margined can go underwater in a tail event. This is the dominant solvency failure mode for a perp protocol.',
+    formula: 'ES₉₅ = −𝔼[R | R ≤ q₀.₀₅(R)]   (log returns)',
+    hiB: false,
+  },
+  volume: {
+    title: '30d Avg Daily Spot Volume',
+    what: '30-day average daily spot trading volume (USD) across all exchanges, sourced from CoinGecko market chart.',
+    why: 'Oracle manipulation resistance: absolute scale. Higher volume raises the cost of sustaining an artificial price long enough to manipulate liquidations or funding rates.',
+    formula: '(1/30) · Σ V_day   over trailing 30 days',
+    hiB: true,
+  },
+  conc: {
+    title: 'Concentration (1 − HHI)',
+    what: 'Herfindahl-Hirschman Index computed over Tier-1/2 exchange volume shares only. Score = 1 − HHI, so lower concentration = higher score. Restricted to T1/T2 because those are the oracle-feeding venues.',
+    why: 'Oracle manipulation resistance: structural resilience. A token dominated by one exchange is cheap to manipulate. Distributed volume means an attacker must move price on multiple exchanges simultaneously.',
+    formula: '1 − Σ(V_e / V_total)²   over T1/T2 only',
+    hiB: true,
+  },
+  spread: {
+    title: 'Avg Book Spread',
+    what: 'Median bid-ask spread percentage across Tier-1/2 exchanges (median of per-exchange medians), converted to fraction. CoinGecko bid_ask_spread_percentage field.',
+    why: 'Spread is an upfront liquidation cost. Wider spread means liquidations incur larger slippage losses, increasing bad debt risk.',
+    formula: 'median(median(spread_e))   fraction, e ∈ T1/T2',
+    hiB: false,
+  },
+};
+
+// ─── STATE ────────────────────────────────────────────────────────────────────
+// resultCache stores fully analyzed results; pendingTokens tracks in-flight
+const resultCache = new Map();   // cgId → result object
+const exchangeRefCache = new Map(); // symbol → per-venue reference settings
+let tokenList = Object.entries(KNOWN).map(([sym, cfg]) => ({
+  symbol: sym, cgId: cfg.cgId, cmcId: cfg.cmcId || null,
+  safetyScore: cfg.safetyScore, feedGrade: cfg.feedGrade,
+  rank: cfg.rank, name: sym, thumb: null,
+}));
+let selectedCgId = null;
+let currentFilter = 'all';
+let searchMode = false;
+let searchResults = [];
+let openMetric = null;
+let analyzing = false;
+let riseMarketsState = { status: 'idle', markets: [], error: null, cachedAt: null };
+let trendingState = { status: 'idle', tokens: [], error: null };
+let expandedRiseMarketId = null;
+const AUTO_REFRESH_MS = 60_000;
+let autoRefreshTimer = null;
+let autoRefreshBusy = false;
+
+// ─── API ──────────────────────────────────────────────────────────────────────
+// CoinGecko currently supports browser CORS on the public API. Use it directly
+// first; public CORS proxies are best-effort fallbacks and may fail independently.
+// Hyperliquid supports CORS natively — call it directly.
+const _IS_FILE = window.location.protocol === 'file:';
+const CG_DIRECT = 'https://api.coingecko.com/api/v3';
+const CMC_HISTORICAL_DIRECT = 'https://api.coinmarketcap.com/data-api/v3.1/cryptocurrency/historical';
+const BINANCE_FAPI_PREMIUM_INDEX = 'https://fapi.binance.com/fapi/v1/premiumIndex';
+const BINANCE_FAPI_EXCHANGE_INFO = 'https://fapi.binance.com/fapi/v1/exchangeInfo';
+const ASTER_FAPI_EXCHANGE_INFO = 'https://fapi.asterdex.com/fapi/v1/exchangeInfo';
+const RISE_MARKETS_DIRECT = 'https://api.rise.trade/v1/markets';
+const LIGHTER_ORDER_BOOK_DETAILS_DIRECT = 'https://mainnet.zklighter.elliot.ai/api/v1/orderBookDetails';
+const HL_DIRECT = 'https://api.hyperliquid.xyz/info';
+const CG_SOURCES = [
+  { name: 'CoinGecko', timeoutMs: 10000, url: path => CG_DIRECT + path },
+  { name: 'AllOrigins', timeoutMs: 7000, url: path => `https://api.allorigins.win/raw?url=${encodeURIComponent(CG_DIRECT + path)}` },
+];
+const CG_MIN_INTERVAL_MS = 2200; // public free tier is roughly 30 req/min
+const CG_RETRY_DELAYS_MS = [30_000, 60_000, 120_000, 240_000];
+const RISE_MARKET_SOURCES = [
+  { name: 'RISEx direct', timeoutMs: 10000, url: RISE_MARKETS_DIRECT, parse: r => r.json() },
+  { name: 'RISEx via r.jina.ai', timeoutMs: 12000, url: 'https://r.jina.ai/http://api.rise.trade/v1/markets', parse: r => r.text().then(parseJinaJson) },
+  { name: 'RISEx via AllOrigins', timeoutMs: 8000, url: `https://api.allorigins.win/raw?url=${encodeURIComponent(RISE_MARKETS_DIRECT)}`, parse: r => r.json() },
+];
+const LIGHTER_MARKET_SOURCES = [
+  { name: 'Lighter direct', timeoutMs: 10000, url: LIGHTER_ORDER_BOOK_DETAILS_DIRECT, parse: r => r.json() },
+  { name: 'Lighter via r.jina.ai', timeoutMs: 12000, url: 'https://r.jina.ai/http://mainnet.zklighter.elliot.ai/api/v1/orderBookDetails', parse: r => r.text().then(parseJinaJson) },
+  { name: 'Lighter via AllOrigins', timeoutMs: 8000, url: `https://api.allorigins.win/raw?url=${encodeURIComponent(LIGHTER_ORDER_BOOK_DETAILS_DIRECT)}`, parse: r => r.json() },
+];
+const BINANCE_EXCHANGE_INFO_SOURCES = [
+  { name: 'Binance futures', timeoutMs: 10000, url: BINANCE_FAPI_EXCHANGE_INFO, parse: r => r.json() },
+  { name: 'Binance via AllOrigins', timeoutMs: 8000, url: `https://api.allorigins.win/raw?url=${encodeURIComponent(BINANCE_FAPI_EXCHANGE_INFO)}`, parse: r => r.json() },
+];
+const ASTER_EXCHANGE_INFO_SOURCES = [
+  { name: 'Aster futures', timeoutMs: 10000, url: ASTER_FAPI_EXCHANGE_INFO, parse: r => r.json() },
+  { name: 'Aster via AllOrigins', timeoutMs: 8000, url: `https://api.allorigins.win/raw?url=${encodeURIComponent(ASTER_FAPI_EXCHANGE_INFO)}`, parse: r => r.json() },
+];
+
+const CMC_IDS_BY_SYMBOL = {
+  BTC: 1, LTC: 2, XRP: 52, DOGE: 74, DASH: 131, XMR: 328, XLM: 512,
+  USDT: 825, ETH: 1027, ETC: 1321, ZEC: 1437, BNB: 1839, BCH: 1831,
+  TRX: 1958, LINK: 1975, ADA: 2010, FIL: 2280, VET: 3077, CRO: 3635,
+  ATOM: 3794, FET: 3773, OKB: 3897, ALGO: 4030, HBAR: 4642, SOL: 5426,
+  AVAX: 5805, NEAR: 6535, DOT: 6636, UNI: 7083, INJ: 7226, AAVE: 7278,
+  ICP: 8916, TON: 11419, ARB: 11841, OP: 11840, WLD: 13502, KAS: 20396,
+  SUI: 20947, ONDO: 21159, APT: 21794, TAO: 22974, SEI: 23149, PEPE: 24478,
+  POL: 28321, JUP: 29210, HYPE: 32196, VVV: 35509, MEGA: 38770,
+  MON: 30495, LIT: 39125, PIPPIN: 35053,
+};
+
+const BINANCE_PERP_ALIASES_BY_SYMBOL = {
+  BONK: ['1000BONK'],
+  FLOKI: ['1000FLOKI'],
+  LUNC: ['1000LUNC'],
+  PEPE: ['1000PEPE'],
+  RATS: ['1000RATS'],
+  SATS: ['1000SATS'],
+  SHIB: ['1000SHIB'],
+  XEC: ['1000XEC'],
+};
+
+const HYPERLIQUID_PERP_ALIASES_BY_SYMBOL = {
+  BONK: ['kBONK'],
+  DOGS: ['kDOGS'],
+  FLOKI: ['kFLOKI'],
+  LUNC: ['kLUNC'],
+  NEIRO: ['kNEIRO'],
+  PEPE: ['kPEPE'],
+  SHIB: ['kSHIB'],
+};
+
+let _cgLast = 0;
+let _cgGate = Promise.resolve();
+let _cgCooldownUntil = 0;
+const _binancePerpCheckCache = new Map();
+
+const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+
+function errMsg(err) {
+  if (!err) return 'Unavailable';
+  if (err.name === 'AbortError') return 'Timed out';
+  if (err.isRateLimit) return err.message || 'CoinGecko rate limited';
+  return err.message || 'Unavailable';
+}
+
+async function fetchWithTimeout(url, options = {}, timeoutMs = 12000) {
+  const ctrl = new AbortController();
+  const timeout = setTimeout(() => ctrl.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...options, signal: ctrl.signal });
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+// Update the text inside the loading panel without a full re-render.
+function setLoadingMsg(msg) {
+  const el = document.getElementById('loading-msg');
+  if (el) el.textContent = msg;
+}
+
+async function paceCoinGecko() {
+  let release;
+  const prev = _cgGate;
+  _cgGate = new Promise(resolve => { release = resolve; });
+  await prev.catch(() => {});
+  const wait = Math.max(0, _cgLast + CG_MIN_INTERVAL_MS - Date.now());
+  if (wait > 0) await sleep(wait);
+  _cgLast = Date.now();
+  release();
+}
+
+function retryAfterMs(r, fallbackMs) {
+  const raw = r.headers.get('retry-after');
+  if (!raw) return fallbackMs;
+  const seconds = Number(raw);
+  if (Number.isFinite(seconds)) return Math.max(seconds * 1000, fallbackMs);
+  const dateMs = Date.parse(raw);
+  return Number.isFinite(dateMs) ? Math.max(dateMs - Date.now(), fallbackMs) : fallbackMs;
+}
+
+async function waitCoinGeckoRetry(ms, label) {
+  const until = Date.now() + ms;
+  _cgCooldownUntil = Math.max(_cgCooldownUntil, until);
+  while (true) {
+    const left = until - Date.now();
+    if (left <= 0) return;
+    setLoadingMsg(`${label} — retrying in ${Math.ceil(left / 1000)}s`);
+    await sleep(Math.min(left, 1000));
+  }
+}
+
+async function waitCoinGeckoCooldown() {
+  const left = _cgCooldownUntil - Date.now();
+  if (left > 0) await waitCoinGeckoRetry(left, 'CoinGecko cooldown');
+}
+
+function cgRateLimitError(ms) {
+  const err = new Error('CoinGecko rate limited');
+  err.isRateLimit = true;
+  err.retryMs = ms;
+  return err;
+}
+
+async function cgFetchDirect(path, attempt) {
+  await waitCoinGeckoCooldown();
+  await paceCoinGecko();
+
+  let r;
+  try {
+    r = await fetchWithTimeout(CG_DIRECT + path, {}, 10000);
+  } catch (netErr) {
+    // CoinGecko 429 responses are sometimes CORS-masked by the browser as
+    // generic network failures, so treat direct fetch failures as retryable.
+    const err = new Error(`CoinGecko network/rate-limit wait`);
+    err.isRetryable = true;
+    err.retryMs = CG_RETRY_DELAYS_MS[Math.min(attempt, CG_RETRY_DELAYS_MS.length - 1)];
+    return Promise.reject(err);
+  }
+
+  if (r.status === 429) {
+    const fallback = CG_RETRY_DELAYS_MS[Math.min(attempt, CG_RETRY_DELAYS_MS.length - 1)];
+    throw cgRateLimitError(retryAfterMs(r, fallback));
+  }
+
+  if (r.status >= 500) {
+    const err = new Error(`CoinGecko ${r.status}`);
+    err.isRetryable = true;
+    err.retryMs = CG_RETRY_DELAYS_MS[Math.min(attempt, CG_RETRY_DELAYS_MS.length - 1)];
+    throw err;
+  }
+
+  if (!r.ok) throw new Error(`CoinGecko ${r.status}`);
+  return r.json();
+}
+
+async function cgFetchProxy(path) {
+  const src = CG_SOURCES[1];
+  const r = await fetchWithTimeout(src.url(path), {}, src.timeoutMs);
+  if (!r.ok) throw new Error(`${src.name} ${r.status}`);
+  return r.json();
+}
+
+// Retries direct CoinGecko on 429, CORS-masked 429s, and transient 5xxs. The
+// public proxy is only a final fallback for non-rate-limit failures, so proxy
+// timeouts do not mask expected free-tier rate limiting.
+async function cgGet(path) {
+  const MAX_ATTEMPTS = CG_RETRY_DELAYS_MS.length + 1;
+  let lastErr = null;
+
+  for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
+    try {
+      return await cgFetchDirect(path, attempt);
+    } catch (err) {
+      lastErr = err;
+      const retryable = err.isRateLimit || err.isRetryable;
+      if (!retryable || attempt === MAX_ATTEMPTS - 1) break;
+      const waitMs = err.retryMs || CG_RETRY_DELAYS_MS[Math.min(attempt, CG_RETRY_DELAYS_MS.length - 1)];
+      await waitCoinGeckoRetry(waitMs, err.isRateLimit ? 'CoinGecko rate limit' : 'CoinGecko temporary error');
+    }
+  }
+
+  if (lastErr?.isRateLimit || lastErr?.isRetryable) {
+    const err = new Error('CoinGecko rate limited; refresh after the cooldown completes');
+    err.isRateLimit = true;
+    throw err;
+  }
+
+  try {
+    return await cgFetchProxy(path);
+  } catch (proxyErr) {
+    throw lastErr || proxyErr;
+  }
+}
+
+function parseJinaJson(text) {
+  const marker = 'Markdown Content:';
+  const body = text.includes(marker) ? text.slice(text.indexOf(marker) + marker.length).trim() : text.trim();
+  const start = body.indexOf('{');
+  const end = body.lastIndexOf('}');
+  if (start < 0 || end < start) throw new Error('CMC proxy returned non-JSON');
+  return JSON.parse(body.slice(start, end + 1));
+}
+
+async function cmcHistorical(cmcId) {
+  if (!cmcId) throw new Error('No CMC id');
+  const qs = `?id=${encodeURIComponent(cmcId)}&interval=24h`;
+  const sources = [
+    {
+      name: 'CMC via r.jina.ai',
+      url: `https://r.jina.ai/http://api.coinmarketcap.com/data-api/v3.1/cryptocurrency/historical${qs}`,
+      parse: r => r.text().then(parseJinaJson),
+    },
+    {
+      name: 'CMC direct',
+      url: CMC_HISTORICAL_DIRECT + qs,
+      parse: r => r.json(),
+    },
+  ];
+
+  let lastErr = null;
+  for (const src of sources) {
+    try {
+      const r = await fetchWithTimeout(src.url, {}, 14000);
+      if (!r.ok) {
+        lastErr = new Error(`${src.name} ${r.status}`);
+        continue;
+      }
+      const data = await src.parse(r);
+      const quotes = data?.data?.quotes;
+      if (!Array.isArray(quotes) || !quotes.length) {
+        lastErr = new Error(`${src.name}: empty history`);
+        continue;
+      }
+      return data;
+    } catch (err) {
+      lastErr = new Error(`${src.name}: ${errMsg(err)}`);
+    }
+  }
+  throw lastErr || new Error('CMC history unavailable');
+}
+
+function binancePerpSymbolCandidates(symbol) {
+  const base = String(symbol || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+  const bases = [base, ...(BINANCE_PERP_ALIASES_BY_SYMBOL[base] || [])].filter(Boolean);
+  const quotes = ['USDT', 'USDC'];
+  return new Set(bases.flatMap(b => quotes.map(q => b + q)));
+}
+
+async function fetchBinancePerpCandidate(contractSymbol) {
+  if (_binancePerpCheckCache.has(contractSymbol)) return _binancePerpCheckCache.get(contractSymbol);
+
+  const p = fetchWithTimeout(
+    `${BINANCE_FAPI_PREMIUM_INDEX}?symbol=${encodeURIComponent(contractSymbol)}`,
+    {},
+    8000
+  ).then(async r => {
+    let data = null;
+    try { data = await r.json(); } catch {}
+    if (!r.ok) throw new Error(`Binance futures ${r.status}`);
+    if (data?.code === -1121) return null; // invalid symbol: not listed on Binance perps
+    if (data?.symbol === contractSymbol && Number(data.markPrice) > 0) return data;
+    return null;
+  }).catch(err => {
+    _binancePerpCheckCache.delete(contractSymbol);
+    throw err;
+  });
+
+  _binancePerpCheckCache.set(contractSymbol, p);
+  return p;
+}
+
+async function checkBinancePerp(symbol) {
+  let lastErr = null;
+  for (const contractSymbol of binancePerpSymbolCandidates(symbol)) {
+    try {
+      const data = await fetchBinancePerpCandidate(contractSymbol);
+      if (data) {
+        return { pass: true, value: `${data.symbol} perpetual` };
+      }
+    } catch (err) {
+      lastErr = err;
+    }
+  }
+  if (lastErr) throw lastErr;
+  return { pass: false, value: 'No Binance perp' };
+}
+
+async function fetchJsonFromSources(sources, validate) {
+  let lastErr = null;
+  for (const src of sources) {
+    try {
+      const r = await fetchWithTimeout(src.url, {}, src.timeoutMs);
+      if (!r.ok) {
+        lastErr = new Error(`${src.name} ${r.status}`);
+        continue;
+      }
+      const data = await src.parse(r);
+      if (validate && !validate(data)) {
+        lastErr = new Error(`${src.name}: unexpected response`);
+        continue;
+      }
+      return data;
+    } catch (err) {
+      lastErr = new Error(`${src.name}: ${errMsg(err)}`);
+    }
+  }
+  throw lastErr || new Error('Unavailable');
+}
+
+function refSymbol(symbol) {
+  return String(symbol || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+}
+
+function hyperliquidSymbolCandidates(symbol) {
+  const base = refSymbol(symbol);
+  return new Set([base, ...(HYPERLIQUID_PERP_ALIASES_BY_SYMBOL[base] || [])].filter(Boolean));
+}
+
+function lighterMarginFraction(v) {
+  const n = numOrNull(v);
+  return n === null ? null : n / 10000;
+}
+
+function marginPct(v) {
+  return v === null || v === undefined || !Number.isFinite(v) ? '—' : (v * 100).toFixed(2) + '%';
+}
+
+function levFromImr(imr) {
+  return imr && Number.isFinite(imr) && imr > 0 ? Math.floor(1 / imr) : null;
+}
+
+function exchangeStatusLabel(status) {
+  const s = String(status || '').toLowerCase();
+  if (s === 'trading' || s === 'active') return 'ACTIVE';
+  return String(status || 'active').toUpperCase();
+}
+
+function decimalStep(decimals) {
+  const n = numOrNull(decimals);
+  return n === null ? null : 10 ** (-n);
+}
+
+function hyperliquidPriceStep(price, szDecimals) {
+  const px = numOrNull(price);
+  const sz = numOrNull(szDecimals);
+  if (!(px > 0) || sz === null) return null;
+  const maxDecimalStep = 10 ** (-(6 - sz)); // perp prices: max decimals = 6 - szDecimals
+  const sigFigStep = 10 ** (Math.floor(Math.log10(px)) - 4); // 5 significant figures
+  return Math.max(maxDecimalStep, sigFigStep);
+}
+
+async function fetchLighterReference(symbol) {
+  const data = await fetchJsonFromSources(
+    LIGHTER_MARKET_SOURCES,
+    data => Array.isArray(data?.order_book_details)
+  );
+  const want = refSymbol(symbol);
+  const market = (data.order_book_details || []).find(m => {
+    const mSym = refSymbol(String(m.symbol || '').split('/')[0]);
+    return m.market_type === 'perp' && mSym === want && m.market_config?.hidden !== true;
+  });
+  if (!market) return { venue: 'Lighter', listed: false, note: 'No active perp market found' };
+
+  const minImr = lighterMarginFraction(market.min_initial_margin_fraction);
+  const defaultImr = lighterMarginFraction(market.default_initial_margin_fraction);
+  const mmr = lighterMarginFraction(market.maintenance_margin_fraction);
+  const cmr = lighterMarginFraction(market.closeout_margin_fraction);
+  const orderLimit = numOrNull(market.order_quote_limit);
+  const stepSize = decimalStep(market.supported_size_decimals ?? market.size_decimals);
+  const stepPrice = decimalStep(market.supported_price_decimals ?? market.price_decimals);
+
+  return {
+    venue: 'Lighter',
+    listed: true,
+    market: market.symbol,
+    status: market.status || 'active',
+    maxLev: levFromImr(minImr),
+    imr: minImr,
+    mmr,
+    cmr,
+    stepSize,
+    stepPrice,
+    limit: orderLimit ? fmtBig(orderLimit) : '—',
+    note: defaultImr && defaultImr !== minImr ? `Default IMR ${marginPct(defaultImr)}` : 'Public market margin fractions',
+  };
+}
+
+async function fetchHyperliquidReference(symbol) {
+  const combined = await hlPost({ type: 'metaAndAssetCtxs' });
+  const meta = Array.isArray(combined) ? combined[0] : await hlPost({ type: 'meta' });
+  const ctxs = Array.isArray(combined) ? combined[1] : [];
+  if (!meta?.universe) throw new Error(_IS_FILE ? 'Skipped on file://' : 'Hyperliquid metadata unavailable');
+
+  const want = hyperliquidSymbolCandidates(symbol);
+  const assetIndex = (meta.universe || []).findIndex(a => want.has(a.name) && !a.isDelisted);
+  const asset = assetIndex >= 0 ? meta.universe[assetIndex] : null;
+  if (!asset) return { venue: 'Hyperliquid', listed: false, note: 'No active perp market found' };
+
+  const table = (meta.marginTables || []).find(([id]) => Number(id) === Number(asset.marginTableId));
+  const tiers = table?.[1]?.marginTiers || [];
+  const firstTier = tiers[0] || null;
+  const nextTier = tiers[1] || null;
+  const maxLev = numOrNull(asset.maxLeverage) || numOrNull(firstTier?.maxLeverage);
+  const ctx = Array.isArray(ctxs) ? ctxs[assetIndex] : null;
+  const markPx = numOrNull(ctx?.markPx) || numOrNull(ctx?.midPx) || numOrNull(ctx?.oraclePx);
+
+  return {
+    venue: 'Hyperliquid',
+    listed: true,
+    market: asset.name,
+    status: asset.onlyIsolated ? 'isolated' : 'active',
+    maxLev,
+    imr: maxLev ? 1 / maxLev : null,
+    mmr: null,
+    cmr: null,
+    stepSize: decimalStep(asset.szDecimals),
+    stepPrice: hyperliquidPriceStep(markPx, asset.szDecimals),
+    limit: nextTier?.lowerBound ? `0 - ${fmtBig(Number(nextTier.lowerBound))}` : 'Flat',
+    note: table?.[1]?.description
+      ? `${table[1].description}; price tick is effective at current mark`
+      : 'Public meta margin table; price tick is effective at current mark',
+  };
+}
+
+async function fetchExchangeInfoReference(symbol, sources, venue, notListedNote) {
+  const data = await fetchJsonFromSources(
+    sources,
+    data => Array.isArray(data?.symbols)
+  );
+  const candidates = binancePerpSymbolCandidates(symbol);
+  const market = (data.symbols || []).find(s =>
+    candidates.has(s.symbol) &&
+    s.status === 'TRADING' &&
+    String(s.contractType || '').includes('PERPETUAL')
+  );
+  if (!market) return { venue, listed: false, note: notListedNote };
+
+  const reqPct = numOrNull(market.requiredMarginPercent);
+  const maintPct = numOrNull(market.maintMarginPercent);
+  const imr = reqPct === null ? null : reqPct / 100;
+  const mmr = maintPct === null ? null : maintPct / 100;
+  const minNotional = numOrNull((market.filters || []).find(f => f.filterType === 'MIN_NOTIONAL')?.notional);
+  const priceFilter = (market.filters || []).find(f => f.filterType === 'PRICE_FILTER');
+  const lotFilter = (market.filters || []).find(f => f.filterType === 'LOT_SIZE');
+
+  return {
+    venue,
+    listed: true,
+    market: market.symbol,
+    status: market.status,
+    maxLev: levFromImr(imr),
+    imr,
+    mmr,
+    cmr: null,
+    stepSize: numOrNull(lotFilter?.stepSize),
+    stepPrice: numOrNull(priceFilter?.tickSize),
+    limit: minNotional ? `Min ${fmtBig(minNotional)}` : '—',
+    note: `${venue} public exchangeInfo baseline`,
+  };
+}
+
+async function fetchBinanceReference(symbol) {
+  const ref = await fetchExchangeInfoReference(
+    symbol,
+    BINANCE_EXCHANGE_INFO_SOURCES,
+    'Binance',
+    'No USD-M perp market found'
+  );
+  return ref.listed
+    ? { ...ref, note: 'Public exchangeInfo baseline; full leverage brackets require signed API access' }
+    : ref;
+}
+
+async function fetchAsterReference(symbol) {
+  return fetchExchangeInfoReference(
+    symbol,
+    ASTER_EXCHANGE_INFO_SOURCES,
+    'Aster',
+    'No Aster perp market found'
+  );
+}
+
+function emptyExchangeRefState(symbol) {
+  return {
+    symbol,
+    status: 'loading',
+    refs: {
+      binance: { status: 'loading', data: null, error: null },
+      hyperliquid: { status: 'loading', data: null, error: null },
+      aster: { status: 'loading', data: null, error: null },
+      lighter: { status: 'loading', data: null, error: null },
+    },
+    updatedAt: null,
+  };
+}
+
+function updateExchangeRef(symbol, venue, patch) {
+  const st = exchangeRefCache.get(symbol) || emptyExchangeRefState(symbol);
+  st.refs[venue] = { ...st.refs[venue], ...patch };
+  const refs = Object.values(st.refs);
+  st.status = refs.some(r => r.status === 'loading') ? 'loading' : 'loaded';
+  st.updatedAt = Date.now();
+  exchangeRefCache.set(symbol, st);
+  refreshExchangeReferenceSection(symbol);
+}
+
+function refreshExchangeReferenceSection(symbol) {
+  if (refSymbol(symbol) !== refSymbol(_lastSelectedSymbol)) return;
+  const el = document.getElementById('exchange-ref-section');
+  if (el) el.innerHTML = renderExchangeReferenceSection(symbol);
+}
+
+async function loadExchangeReferences(symbol, force = false) {
+  const sym = refSymbol(symbol);
+  const current = exchangeRefCache.get(sym);
+  if (!force && current && current.status !== 'error') return;
+
+  exchangeRefCache.set(sym, emptyExchangeRefState(sym));
+  refreshExchangeReferenceSection(sym);
+
+  [
+    ['binance', fetchBinanceReference],
+    ['hyperliquid', fetchHyperliquidReference],
+    ['aster', fetchAsterReference],
+    ['lighter', fetchLighterReference],
+  ].forEach(([venue, fn]) => {
+    fn(sym)
+      .then(data => updateExchangeRef(sym, venue, { status: 'loaded', data, error: null }))
+      .catch(err => updateExchangeRef(sym, venue, { status: 'error', data: null, error: errMsg(err) }));
+  });
+}
+
+async function hlPost(body) {
+  if (_IS_FILE) return null;   // skip HL on file:// (POST not proxied)
+  try {
+    const r = await fetchWithTimeout(HL_DIRECT, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    }, 8000);
+    if (!r.ok) return null;
+    return r.json();
+  } catch { return null; }
+}
+
+// ─── COMPUTE ──────────────────────────────────────────────────────────────────
+function scoreMetric(v, ref, w, inverted, vmax = null) {
+  if (!(v > 0)) return 0;
+  if (!inverted) return Math.min(v / ref, 1.0) * w;
+  if (v <= ref) return w;
+  if (vmax !== null) {
+    if (v >= vmax) return 0;
+    return Math.max(1.0 - Math.log(v / ref) / Math.log(vmax / ref), 0) * w;
+  }
+  return Math.min(ref / v, 1.0) * w;
+}
+
+function scoreToTier(s) {
+  for (const [thr, name] of CFG.TIERS) if (s >= thr) return name;
+  return 'Rejected';
+}
+
+// More conservative (higher index in TIER_ORDER) wins
+function capTier(tier, ceiling) {
+  const a = CFG.TIER_ORDER.indexOf(tier);
+  const b = CFG.TIER_ORDER.indexOf(ceiling);
+  return a >= b ? tier : ceiling;
+}
+
+function computeFinalTier(symbol, rawTier, feedGrade, ageDays) {
+  let t = capTier(rawTier, CFG.FEED_CEILING[feedGrade] || 'Micro-Cap');
+  // Non-whitelisted tokens are capped at Major even if they score Prime
+  if (t === 'Prime' && !CFG.PRIME_WHITELIST.has(symbol)) t = 'Major';
+  // Tokens younger than AGE_MIN_DAYS are capped at Micro-Cap
+  if (ageDays < CFG.AGE_MIN_DAYS) t = capTier(t, 'Micro-Cap');
+  return t;
+}
+
+function normSlug(cgIdent) {
+  return CFG.CG_TO_CMC[cgIdent] || cgIdent;
+}
+
+function todayUtcStartMs() {
+  const now = new Date();
+  return Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
+}
+
+function parseCMCDaily(historicalData) {
+  const todayStart = todayUtcStartMs();
+  const rows = [];
+  for (const q of historicalData?.data?.quotes || []) {
+    const quote = q.quote || {};
+    const closeTs = Date.parse(q.timeClose || q.timeOpen || quote.timestamp || '');
+    if (!Number.isFinite(closeTs) || closeTs >= todayStart) continue;
+    const h = Number(quote.high), l = Number(quote.low), c = Number(quote.close);
+    if (!(h > 0 && l > 0 && c > 0)) continue;
+    rows.push({
+      ts: Date.parse(q.timeOpen || q.timeClose || quote.timestamp || ''),
+      h, l, c,
+      volume: Number(quote.volume) || 0,
+    });
+  }
+  return rows.sort((a, b) => a.ts - b.ts);
+}
+
+function dailyFromMarketChart(chartData) {
+  const todayStart = todayUtcStartMs();
+  const byDay = new Map();
+  for (const [ts, price] of chartData.prices || []) {
+    if (ts >= todayStart) continue;
+    if (!(price > 0)) continue;
+    const d = new Date(ts);
+    const key = `${d.getUTCFullYear()}-${d.getUTCMonth()}-${d.getUTCDate()}`;
+    const row = byDay.get(key) || { ts, c: price, volume: 0 };
+    if (ts >= row.ts) { row.ts = ts; row.c = price; }
+    byDay.set(key, row);
+  }
+  for (const [ts, vol] of chartData.total_volumes || []) {
+    if (ts >= todayStart) continue;
+    const d = new Date(ts);
+    const key = `${d.getUTCFullYear()}-${d.getUTCMonth()}-${d.getUTCDate()}`;
+    const row = byDay.get(key);
+    if (row) row.volume = Number(vol) || 0;
+  }
+  return [...byDay.values()].sort((a, b) => a.ts - b.ts);
+}
+
+function parkinsonVolDaily(dailyRows) {
+  const daily = dailyRows.filter(d => d.h > 0 && d.l > 0).slice(-90);
+  const n = daily.length;
+  if (n < 7) return { val: 0, days: n, flag: `insufficient (${n}d < 7d)` };
+  let sum = 0, valid = 0;
+  for (const { h, l } of daily) {
+    if (h > 0 && l > 0 && h >= l) { sum += Math.log(h / l) ** 2; valid++; }
+  }
+  if (valid < 7) return { val: 0, days: valid, flag: `insufficient valid (${valid}d)` };
+  return {
+    val: Math.sqrt(365 * sum / (4 * valid * Math.LN2)),
+    days: n,
+    flag: n < 90 ? `short history (${n}d)` : null,
+  };
+}
+
+function es95Daily(dailyRows) {
+  const closes = dailyRows.map(d => d.c).filter(p => p > 0);
+  if (closes.length < 21) return { val: 0, days: Math.max(closes.length - 1, 0), flag: 'insufficient history' };
+  const logRet = [];
+  for (let i = 1; i < closes.length; i++) logRet.push(Math.log(closes[i] / closes[i - 1]));
+  logRet.sort((a, b) => a - b);
+  const k = Math.floor(logRet.length * 0.05);
+  const tail = logRet.slice(0, k + 1);
+  const es = -tail.reduce((a, b) => a + b, 0) / tail.length;
+  return {
+    val: es,
+    days: logRet.length,
+    flag: logRet.length < 180 ? `short history (${logRet.length}d)` : null,
+  };
+}
+
+function avgVolume30dDaily(dailyRows) {
+  const vols = dailyRows.map(d => d.volume).filter(v => v >= 0).slice(-30);
+  if (!vols.length) return 0;
+  return vols.reduce((s, v) => s + v, 0) / vols.length;
+}
+
+// Aggregate 4h CoinGecko OHLC candles into daily candles for Parkinson vol.
+// CoinGecko OHLC returns [[timestamp_ms, open, high, low, close], ...]
+function aggregateToDaily(ohlcArr) {
+  const days = {};
+  for (const [ts, , h, l] of ohlcArr) {
+    // Group by UTC date
+    const d = new Date(ts);
+    const key = `${d.getUTCFullYear()}-${d.getUTCMonth()}-${d.getUTCDate()}`;
+    if (!days[key]) days[key] = { ts, h, l };
+    else { days[key].h = Math.max(days[key].h, h); days[key].l = Math.min(days[key].l, l); }
+  }
+  return Object.values(days).sort((a, b) => a.ts - b.ts);
+}
+
+// Parkinson 1980 estimator: σ_ann = √(365/(4n·ln2) · Σln(H/L)²)
+// Uses last 90 daily candles.
+function parkinsonVol(ohlcArr) {
+  const daily = aggregateToDaily(ohlcArr).slice(-90);
+  const n = daily.length;
+  if (n < 7) return { val: 0, days: n, flag: `insufficient (${n}d < 7d)` };
+  let sum = 0, valid = 0;
+  for (const { h, l } of daily) {
+    if (h > 0 && l > 0 && h >= l) { sum += Math.log(h / l) ** 2; valid++; }
+  }
+  if (valid < 7) return { val: 0, days: valid, flag: `insufficient valid (${valid}d)` };
+  return {
+    val: Math.sqrt(365 * sum / (4 * valid * Math.LN2)),
+    days: n,
+    flag: n < 90 ? `short history (${n}d)` : null,
+  };
+}
+
+// ES 95% = mean of worst 5% of daily log-return losses over all available history.
+// prices: [[timestamp_ms, price], ...]
+function es95(prices) {
+  const closes = prices.map(p => p[1]).filter(p => p > 0);
+  if (closes.length < 21) return { val: 0, days: closes.length - 1, flag: 'insufficient history' };
+  const logRet = [];
+  for (let i = 1; i < closes.length; i++) logRet.push(Math.log(closes[i] / closes[i - 1]));
+  logRet.sort((a, b) => a - b);
+  const k = Math.floor(logRet.length * 0.05);
+  const tail = logRet.slice(0, k + 1);
+  const es = -tail.reduce((a, b) => a + b, 0) / tail.length;
+  return {
+    val: es,
+    days: logRet.length,
+    flag: logRet.length < 180 ? `short history (${logRet.length}d)` : null,
+  };
+}
+
+// 30-day average daily volume from CoinGecko market_chart total_volumes.
+// volumes: [[timestamp_ms, usd_volume], ...]
+function avgVolume30d(volumes) {
+  if (!volumes || !volumes.length) return 0;
+  const last30 = volumes.slice(-30);
+  return last30.reduce((s, [, v]) => s + v, 0) / last30.length;
+}
+
+// Build per-exchange depth map from CoinGecko tickers (requires depth=true parameter).
+function buildCGDepth(tickers) {
+  const per = {};
+  for (const t of tickers) {
+    if (!CFG.USD_QUOTES.has(t.target)) continue;
+    if (t.is_anomaly || t.is_stale) continue;
+    const slug = normSlug(t.market?.identifier || '');
+    const bid = t.cost_to_move_down_usd || 0;   // depth to move price down 2%
+    const ask = t.cost_to_move_up_usd   || 0;   // depth to move price up 2%
+    if (!bid && !ask) continue;
+    if (!per[slug]) per[slug] = { bid: 0, ask: 0 };
+    per[slug].bid += bid;
+    per[slug].ask += ask;
+  }
+  return per;
+}
+
+// Compute qualified spot depth.
+// h_e = 1.0 for Tier-1, 0.5 for Tier-2. HL L2 book takes priority for 'hyperliquid'.
+function spotDepth(cgDepth, hlDepth) {
+  const allSlugs = new Set([...Object.keys(cgDepth), ...Object.keys(hlDepth || {})]);
+  let total = 0;
+  for (const slug of allSlugs) {
+    const isT1 = CFG.TIER1.has(slug), isT2 = CFG.TIER2.has(slug);
+    if (!isT1 && !isT2) continue;
+    const cg = cgDepth[slug] || { bid: 0, ask: 0 };
+    const hl = (hlDepth || {})[slug] || { bid: 0, ask: 0 };
+    // For HL slug, HL L2 takes priority; for others prefer CG
+    const bid = slug === 'hyperliquid' ? (hl.bid || cg.bid) : (cg.bid || hl.bid);
+    const ask = slug === 'hyperliquid' ? (hl.ask || cg.ask) : (cg.ask || hl.ask);
+    total += (isT1 ? 1.0 : 0.5) * (bid + ask) / 2;
+  }
+  return total;
+}
+
+// 1 − HHI over T1/T2 exchange volume shares.
+function concentration(tickers) {
+  const vols = {};
+  let total = 0;
+  for (const t of tickers) {
+    if (!CFG.USD_QUOTES.has(t.target)) continue;
+    if (t.is_anomaly || t.is_stale) continue;
+    const slug = normSlug(t.market?.identifier || '');
+    if (!CFG.TIER1.has(slug) && !CFG.TIER2.has(slug)) continue;
+    const v = t.converted_volume?.usd || 0;
+    vols[slug] = (vols[slug] || 0) + v;
+    total += v;
+  }
+  if (!total) return 0;
+  const hhi = Object.values(vols).reduce((s, v) => s + (v / total) ** 2, 0);
+  return 1.0 - hhi;
+}
+
+// Median bid-ask spread fraction across T1/T2 exchanges (median of per-exchange medians).
+function bookSpread(tickers) {
+  const perEx = {};
+  for (const t of tickers) {
+    if (!CFG.USD_QUOTES.has(t.target)) continue;
+    if (t.is_anomaly || t.is_stale) continue;
+    const slug = normSlug(t.market?.identifier || '');
+    if (!CFG.TIER1.has(slug) && !CFG.TIER2.has(slug)) continue;
+    const sp = t.bid_ask_spread_percentage;
+    if (!sp || sp <= 0 || sp > 500) continue;
+    if (!perEx[slug]) perEx[slug] = [];
+    perEx[slug].push(sp);
+  }
+  const meds = Object.values(perEx).map(arr => {
+    arr.sort((a, b) => a - b);
+    const m = Math.floor(arr.length / 2);
+    return arr.length % 2 ? arr[m] : (arr[m - 1] + arr[m]) / 2;
+  });
+  if (!meds.length) return 0;
+  meds.sort((a, b) => a - b);
+  const m = Math.floor(meds.length / 2);
+  const med = meds.length % 2 ? meds[m] : (meds[m - 1] + meds[m]) / 2;
+  return med / 100.0;  // convert percentage → fraction
+}
+
+// Spot ticker helper used only for exchange/venue metadata. The hard listing
+// gate checks Binance perpetual futures via checkBinancePerp().
+function isBinanceListed(tickers) {
+  for (const t of tickers) {
+    if (!CFG.USD_QUOTES.has(t.target)) continue;
+    if (t.is_anomaly || t.is_stale) continue;
+    if (normSlug(t.market?.identifier || '') === 'binance') return true;
+  }
+  return false;
+}
+
+// ─── ANALYSIS ─────────────────────────────────────────────────────────────────
+async function analyzeToken(cgId, symbol, safetyScore, feedGrade) {
+  if (resultCache.has(cgId)) return resultCache.get(cgId);
+
+  analyzing = true;
+  const steps = [
+    'Fetching market data…',
+    'Loading exchange tickers (page 1)…',
+    'Loading exchange tickers (page 2)…',
+    'Loading OHLC history (90d)…',
+    'Loading price history (365d)…',
+    'Querying Hyperliquid L2 book…',
+    'Computing risk metrics…',
+  ];
+  let step = 0;
+  const setStep = (s) => { step = s; renderLoading(steps[s]); };
+
+  try {
+    setStep(0);
+    const detail = await cgGet(
+      `/coins/${cgId}?localization=false&tickers=false&market_data=true&community_data=false&developer_data=false`
+    );
+
+    setStep(1);
+    const t1 = await cgGet(`/coins/${cgId}/tickers?include_exchange_logos=false&depth=true&page=1`);
+
+    setStep(2);
+    const t2 = await cgGet(`/coins/${cgId}/tickers?include_exchange_logos=false&depth=true&page=2`);
+
+    setStep(3);
+    const ohlcData = await cgGet(`/coins/${cgId}/ohlc?vs_currency=usd&days=90`);
+
+    setStep(4);
+    const chartData = await cgGet(`/coins/${cgId}/market_chart?vs_currency=usd&days=365&interval=daily`);
+
+    setStep(5);
+    // Hyperliquid L2 book — best-effort, failure does not block analysis
+    const hlBook = await hlPost({ type: 'l2Book', coin: symbol, nSigFigs: 3 });
+
+    setStep(6);
+    const allTickers = [...(t1.tickers || []), ...(t2.tickers || [])];
+    const binancePerp = await checkBinancePerp(symbol);
+    const md = detail.market_data || {};
+    const price = md.current_price?.usd || 0;
+    const fdmc  = md.fully_diluted_valuation?.usd || md.market_cap?.usd || 0;
+    const mcap  = md.market_cap?.usd || 0;
+    const rank  = detail.market_cap_rank || null;
+    const name  = detail.name || symbol;
+    const thumb = detail.image?.thumb || null;
+
+    // Hyperliquid L2 depth from order book
+    let hlDepth = {};
+    if (hlBook && Array.isArray(hlBook.levels) && price > 0) {
+      const bids = hlBook.levels[0] || [];
+      const asks = hlBook.levels[1] || [];
+      const lo = price * 0.98, hi = price * 1.02;
+      let bidD = 0, askD = 0;
+      for (const lvl of bids) {
+        const px = parseFloat(lvl.px), sz = parseFloat(lvl.sz);
+        if (px >= lo) bidD += px * sz; else break;
+      }
+      for (const lvl of asks) {
+        const px = parseFloat(lvl.px), sz = parseFloat(lvl.sz);
+        if (px <= hi) askD += px * sz; else break;
+      }
+      hlDepth = { hyperliquid: { bid: bidD, ask: askD } };
+    }
+
+    const cgDepth = buildCGDepth(allTickers);
+    const depthVal  = spotDepth(cgDepth, hlDepth);
+    const parkRes   = parkinsonVol(ohlcData);
+    const es95Res   = es95(chartData.prices || []);
+    const volVal    = avgVolume30d(chartData.total_volumes || []);
+    const concVal   = concentration(allTickers);
+    const spreadVal = bookSpread(allTickers);
+
+    const s1 = scoreMetric(depthVal,  CFG.REFS.depth,  CFG.WEIGHTS.depth,  false);
+    const s2 = scoreMetric(parkRes.val,CFG.REFS.vol,   CFG.WEIGHTS.vol,    true,  CFG.VMAXES.vol);
+    const s3 = scoreMetric(es95Res.val,CFG.REFS.es95,  CFG.WEIGHTS.es95,   true,  CFG.VMAXES.es95);
+    const s4 = scoreMetric(volVal,    CFG.REFS.volume,  CFG.WEIGHTS.volume, false);
+    const s5 = scoreMetric(concVal,   CFG.REFS.conc,    CFG.WEIGHTS.conc,   false);
+    const s6 = scoreMetric(spreadVal, CFG.REFS.spread,  CFG.WEIGHTS.spread, true);
+    const totalScore = Math.round((s1 + s2 + s3 + s4 + s5 + s6) * 10) / 10;
+
+    // Age: number of daily returns available from market chart
+    const ageDays = es95Res.days + 1;
+
+    // Gates
+    const fdmcPass    = fdmc >= CFG.FDMC_MIN;
+    const binancePass = binancePerp.pass;
+    const safetyPass  = safetyScore >= CFG.SAFETY_PASS_MIN;
+    const safetyCond  = !safetyPass && safetyScore >= CFG.SAFETY_COND_MIN;
+    const feedPass    = feedGrade !== 'F';
+    const allPass     = fdmcPass && binancePass;
+
+    // Tier assignment
+    const rawTier   = allPass ? scoreToTier(totalScore) : 'Rejected';
+    const finalTier = allPass ? computeFinalTier(symbol, rawTier, feedGrade, ageDays) : 'Rejected';
+    const tierP     = CFG.TIER_PARAMS[finalTier] || CFG.TIER_PARAMS['Rejected'];
+    const ageCapped = ageDays < CFG.AGE_MIN_DAYS;
+    const whitelistCap = rawTier === 'Prime' && !CFG.PRIME_WHITELIST.has(symbol);
+
+    // Exchange list (T1/T2 only)
+    const exSet = new Set();
+    for (const t of allTickers) {
+      const slug = normSlug(t.market?.identifier || '');
+      if (CFG.TIER1.has(slug) || CFG.TIER2.has(slug)) exSet.add(slug);
+    }
+
+    const result = {
+      symbol, cgId, name, rank, price, fdmc, mcap, thumb,
+      safetyScore, feedGrade,
+      gates: {
+        fdmc:    { pass: fdmcPass,   value: fmtBig(fdmc) + (fdmcPass ? ' ≥ $100M' : ' < $100M') },
+        binance: { pass: binancePass, value: binancePerp.value },
+        safety:  { pass: safetyPass || safetyCond, cond: safetyCond, value: `Score: ${safetyScore}/100${safetyCond ? ' (conditional, 14d pre-listing)' : ''}` },
+        feed:    { pass: feedPass,   value: `Feed Grade: ${feedGrade}` },
+      },
+      allPass, ageCapped, whitelistCap, ageDays,
+      metrics: {
+        depth:  { val: depthVal,   score: s1, w: CFG.WEIGHTS.depth,  label: '2% Market Depth',          rawFmt: fmtBig(depthVal),            detail: METRIC_DETAILS.depth  },
+        vol:    { val: parkRes.val,score: s2, w: CFG.WEIGHTS.vol,    label: 'Parkinson Vol (90d ann.)',  rawFmt: fmtPct(parkRes.val),         detail: METRIC_DETAILS.vol, flag: parkRes.flag  },
+        es95:   { val: es95Res.val,score: s3, w: CFG.WEIGHTS.es95,   label: 'ES 95% (tail loss)',        rawFmt: fmtPct(es95Res.val),         detail: METRIC_DETAILS.es95, flag: es95Res.flag },
+        volume: { val: volVal,     score: s4, w: CFG.WEIGHTS.volume, label: '30d Avg Daily Volume',      rawFmt: fmtBig(volVal) + '/d',        detail: METRIC_DETAILS.volume },
+        conc:   { val: concVal,    score: s5, w: CFG.WEIGHTS.conc,   label: 'Concentration (1−HHI)',     rawFmt: concVal.toFixed(3),          detail: METRIC_DETAILS.conc  },
+        spread: { val: spreadVal,  score: s6, w: CFG.WEIGHTS.spread, label: 'Avg Book Spread',           rawFmt: fmtPct(spreadVal),           detail: METRIC_DETAILS.spread },
+      },
+      totalScore, rawTier, finalTier, tierP,
+      exchanges: [...exSet],
+    };
+
+    resultCache.set(cgId, result);
+
+    // Update token list metadata
+    const tok = tokenList.find(t => t.cgId === cgId);
+    if (tok) { tok.name = name; tok.rank = rank; tok.thumb = thumb; }
+
+    analyzing = false;
+    return result;
+
+  } catch (err) {
+    analyzing = false;
+    throw err;
+  }
+}
+
+// ─── PROGRESSIVE ANALYSIS ────────────────────────────────────────────────────
+// Fetches data in stages, calling renderProgressiveDetail after each stage so
+// the user sees partial results immediately rather than waiting for all fetches.
+// CoinGecko rate-limiter serializes CG calls, but HL and rendering are non-blocking.
+async function analyzeTokenProg(cgId, symbol, safetyScore, feedGrade, cmcId = null) {
+  const st = {
+    cgId, symbol, safetyScore, feedGrade, cmcId,
+    detail: null, tickers: null, binance: null, ohlc: null, chart: null, hl: null,
+    errors: {}, complete: false,
+  };
+  const upd = () => renderProgressiveDetail(st);
+  upd();
+
+  const detailP = (async () => {
+    try {
+      const detailRaw = await cgGet(
+        `/coins/${cgId}?localization=false&tickers=false&market_data=true&community_data=false&developer_data=false`
+      );
+      const md = detailRaw.market_data || {};
+      st.detail = {
+        name:  detailRaw.name || symbol,
+        thumb: detailRaw.image?.thumb || null,
+        price: md.current_price?.usd || 0,
+        fdmc:  md.fully_diluted_valuation?.usd || md.market_cap?.usd || 0,
+        mcap:  md.market_cap?.usd || 0,
+        rank:  detailRaw.market_cap_rank || null,
+      };
+    } catch (err) {
+      st.errors.detail = errMsg(err);
+    }
+    upd();
+  })();
+
+  // Every data family runs independently. Partial sections update as soon as
+  // their own response arrives, and failures are recorded without replacing the
+  // whole panel with an error state.
+  const tickersP = (async () => {
+    const rows = [];
+    const pages = [1, 2].map(page => cgGet(`/coins/${cgId}/tickers?include_exchange_logos=false&depth=true&page=${page}`)
+      .then(data => {
+        rows.push(...(data.tickers || []));
+        const cgDepth = buildCGDepth(rows);
+        const exSet = new Set();
+        for (const t of rows) {
+          const s = normSlug(t.market?.identifier || '');
+          if (CFG.TIER1.has(s) || CFG.TIER2.has(s)) exSet.add(s);
+        }
+        st.tickers = {
+          allTickers: [...rows],
+          binancePass: isBinanceListed(rows),
+          cgDepth,
+          depthVal: spotDepth(cgDepth, st.hl?.hlDepth || {}),
+          spreadVal: bookSpread(rows),
+          concVal:  concentration(rows),
+          exchanges: [...exSet],
+        };
+        upd();
+      })
+      .catch(err => {
+        st.errors.tickers = errMsg(err);
+        upd();
+      }));
+
+    await Promise.allSettled(pages);
+    if (!rows.length && !st.errors.tickers) {
+      st.errors.tickers = 'Unavailable';
+      upd();
+    }
+  })();
+
+  const binanceP = (async () => {
+    try {
+      st.binance = await checkBinancePerp(symbol);
+    } catch (err) {
+      st.errors.binance = errMsg(err);
+    }
+    upd();
+  })();
+
+  const historicalP = (async () => {
+    if (!cmcId) return;
+    try {
+      const hist = await cmcHistorical(cmcId);
+      const daily = parseCMCDaily(hist);
+      if (!daily.length) throw new Error('No complete daily candles');
+      st.ohlc = { parkRes: parkinsonVolDaily(daily), source: 'CMC' };
+      st.chart = {
+        es95Res: es95Daily(daily),
+        volVal: avgVolume30dDaily(daily),
+        ageDays: daily.length,
+        source: 'CMC',
+      };
+    } catch (err) {
+      st.errors.historical = errMsg(err);
+    }
+    upd();
+  })();
+
+  const ohlcP = (async () => {
+    await historicalP;
+    if (st.ohlc) return;
+    try {
+      const ohlcData = await cgGet(`/coins/${cgId}/ohlc?vs_currency=usd&days=30`);
+      st.ohlc = { parkRes: parkinsonVol(ohlcData) };
+    } catch (err) {
+      st.errors.ohlc = st.errors.historical ? `${st.errors.historical}; ${errMsg(err)}` : errMsg(err);
+    }
+    upd();
+  })();
+
+  const chartP = (async () => {
+    await historicalP;
+    if (st.chart) return;
+    try {
+      const chartData = await cgGet(`/coins/${cgId}/market_chart?vs_currency=usd&days=365&interval=daily`);
+      const daily = dailyFromMarketChart(chartData);
+      st.chart = {
+        es95Res: es95Daily(daily),
+        volVal:  avgVolume30dDaily(daily),
+        ageDays: daily.length,
+        source: 'CoinGecko',
+      };
+    } catch (err) {
+      st.errors.chart = st.errors.historical ? `${st.errors.historical}; ${errMsg(err)}` : errMsg(err);
+    }
+    upd();
+  })();
+
+  const hlP = (async () => {
+    await detailP;
+    if (!st.detail?.price) {
+      st.hl = { hlDepth: {} };
+      upd();
+      return;
+    }
+    const hlBook = await hlPost({ type: 'l2Book', coin: symbol, nSigFigs: 3 });
+    let hlDepth = {};
+    if (hlBook && Array.isArray(hlBook.levels)) {
+      const px0 = st.detail.price;
+      const bids = hlBook.levels[0] || [], asks = hlBook.levels[1] || [];
+      const lo = px0 * 0.98, hi = px0 * 1.02;
+      let bidD = 0, askD = 0;
+      for (const l of bids) { const p = parseFloat(l.px), s = parseFloat(l.sz); if (p >= lo) bidD += p * s; else break; }
+      for (const l of asks) { const p = parseFloat(l.px), s = parseFloat(l.sz); if (p <= hi) askD += p * s; else break; }
+      hlDepth = { hyperliquid: { bid: bidD, ask: askD } };
+    }
+    st.hl = { hlDepth };
+    if (st.tickers) {
+      st.tickers.depthVal = spotDepth(st.tickers.cgDepth, hlDepth);
+    }
+    upd();
+  })();
+
+  await Promise.allSettled([detailP, tickersP, binanceP, historicalP, ohlcP, chartP, hlP]);
+
+  // Build final result from accumulated state
+  const { detail: dk, tickers: tk, binance: bk, ohlc: ok, chart: ck, hl: hk } = st;
+  st.complete = true;
+  if (!dk || !tk || !bk || !ok || !ck) {
+    upd();
+    return null;
+  }
+
+  const hlDepth  = hk?.hlDepth || {};
+  const depthVal = spotDepth(tk?.cgDepth || {}, hlDepth);
+  const parkRes  = ok?.parkRes  || { val: 0, days: 0, flag: 'data unavailable' };
+  const es95Res  = ck?.es95Res  || { val: 0, days: 0, flag: 'data unavailable' };
+  const volVal   = ck?.volVal   || 0;
+  const concVal  = tk?.concVal  || 0;
+  const spreadVal = tk?.spreadVal || 0;
+  const allTickers = tk?.allTickers || [];
+
+  const s1 = scoreMetric(depthVal,   CFG.REFS.depth,  CFG.WEIGHTS.depth,  false);
+  const s2 = scoreMetric(parkRes.val, CFG.REFS.vol,    CFG.WEIGHTS.vol,    true,  CFG.VMAXES.vol);
+  const s3 = scoreMetric(es95Res.val, CFG.REFS.es95,   CFG.WEIGHTS.es95,   true,  CFG.VMAXES.es95);
+  const s4 = scoreMetric(volVal,      CFG.REFS.volume,  CFG.WEIGHTS.volume, false);
+  const s5 = scoreMetric(concVal,     CFG.REFS.conc,    CFG.WEIGHTS.conc,   false);
+  const s6 = scoreMetric(spreadVal,   CFG.REFS.spread,  CFG.WEIGHTS.spread, true);
+  const totalScore = Math.round((s1 + s2 + s3 + s4 + s5 + s6) * 10) / 10;
+
+  const ageDays    = ck?.ageDays ?? ((es95Res.days || 0) + 1);
+  const fdmcPass   = (dk?.fdmc || 0) >= CFG.FDMC_MIN;
+  const binPass    = bk?.pass ?? false;
+  const safetyPass = safetyScore >= CFG.SAFETY_PASS_MIN;
+  const safetyCond = !safetyPass && safetyScore >= CFG.SAFETY_COND_MIN;
+  const feedPass   = feedGrade !== 'F';
+  const allPass    = fdmcPass && binPass;
+  const rawTier    = allPass ? scoreToTier(totalScore) : 'Rejected';
+  const finalTier  = allPass ? computeFinalTier(symbol, rawTier, feedGrade, ageDays) : 'Rejected';
+  const tierP      = CFG.TIER_PARAMS[finalTier] || CFG.TIER_PARAMS['Rejected'];
+  const ageCapped  = ageDays < CFG.AGE_MIN_DAYS;
+  const whitelistCap = rawTier === 'Prime' && !CFG.PRIME_WHITELIST.has(symbol);
+
+  const exSet = new Set();
+  for (const t of allTickers) {
+    const s = normSlug(t.market?.identifier || '');
+    if (CFG.TIER1.has(s) || CFG.TIER2.has(s)) exSet.add(s);
+  }
+
+  const result = {
+    symbol, cgId,
+    name:  dk?.name  || symbol,
+    rank:  dk?.rank  || null,
+    price: dk?.price || 0,
+    fdmc:  dk?.fdmc  || 0,
+    mcap:  dk?.mcap  || 0,
+    thumb: dk?.thumb || null,
+    safetyScore, feedGrade,
+    gates: {
+      fdmc:    { pass: fdmcPass,  value: fmtBig(dk?.fdmc||0) + (fdmcPass ? ' ≥ $100M' : ' < $100M') },
+      binance: { pass: binPass,   value: bk?.value || (binPass ? 'Binance perp listed' : 'No Binance perp') },
+      safety:  { pass: safetyPass||safetyCond, cond: safetyCond, value: `Score: ${safetyScore}/100${safetyCond ? ' (conditional, 14d pre-listing)' : ''}` },
+      feed:    { pass: feedPass,  value: `Feed Grade: ${feedGrade}` },
+    },
+    allPass, ageCapped, whitelistCap, ageDays,
+    metrics: {
+      depth:  { val: depthVal,    score: s1, w: CFG.WEIGHTS.depth,  label: '2% Market Depth',          rawFmt: fmtBig(depthVal),          detail: METRIC_DETAILS.depth  },
+      vol:    { val: parkRes.val, score: s2, w: CFG.WEIGHTS.vol,    label: 'Parkinson Vol (90d ann.)',  rawFmt: fmtPct(parkRes.val),        detail: METRIC_DETAILS.vol,   flag: parkRes.flag },
+      es95:   { val: es95Res.val, score: s3, w: CFG.WEIGHTS.es95,   label: 'ES 95% (tail loss)',        rawFmt: fmtPct(es95Res.val),        detail: METRIC_DETAILS.es95,  flag: es95Res.flag },
+      volume: { val: volVal,      score: s4, w: CFG.WEIGHTS.volume, label: '30d Avg Daily Volume',      rawFmt: fmtBig(volVal) + '/d',       detail: METRIC_DETAILS.volume },
+      conc:   { val: concVal,     score: s5, w: CFG.WEIGHTS.conc,   label: 'Concentration (1−HHI)',     rawFmt: concVal.toFixed(3),          detail: METRIC_DETAILS.conc  },
+      spread: { val: spreadVal,   score: s6, w: CFG.WEIGHTS.spread, label: 'Avg Book Spread',           rawFmt: fmtPct(spreadVal),           detail: METRIC_DETAILS.spread },
+    },
+    totalScore, rawTier, finalTier, tierP,
+    exchanges: [...exSet],
+  };
+
+  resultCache.set(cgId, result);
+  const tok = tokenList.find(t => t.cgId === cgId);
+  if (tok) { tok.name = result.name; tok.rank = result.rank; tok.thumb = result.thumb; }
+
+  return result;
+}
+
+// ─── SEARCH ───────────────────────────────────────────────────────────────────
+let _searchTimer = null;
+document.getElementById('search-input').addEventListener('input', e => {
+  const q = e.target.value.trim();
+  clearTimeout(_searchTimer);
+  if (!q) {
+    searchMode = false;
+    searchResults = [];
+    renderTokenList();
+    return;
+  }
+  searchMode = true;
+  document.getElementById('search-spinner').style.display = 'block';
+  _searchTimer = setTimeout(async () => {
+    try {
+      const data = await cgGet(`/search?query=${encodeURIComponent(q)}`);
+      searchResults = (data.coins || []).slice(0, 10).map(c => {
+        const sym = c.symbol.toUpperCase();
+        const known = KNOWN[sym];
+        return {
+          symbol: sym, cgId: c.id, cmcId: known?.cmcId || CMC_IDS_BY_SYMBOL[sym],
+          name: c.name,
+          rank: c.market_cap_rank || null, thumb: c.thumb || null,
+          safetyScore: known?.safetyScore || 75,
+          feedGrade:   known?.feedGrade   || 'A',
+        };
+      });
+    } catch { searchResults = []; }
+    document.getElementById('search-spinner').style.display = 'none';
+    renderTokenList();
+  }, 400);
+});
+
+// ─── FORMAT HELPERS ───────────────────────────────────────────────────────────
+function fmtPrice(p) {
+  if (!p) return '—';
+  if (p >= 1000)  return '$' + p.toLocaleString('en-US', { maximumFractionDigits: 0 });
+  if (p >= 1)     return '$' + p.toFixed(2);
+  if (p >= 0.01)  return '$' + p.toFixed(3);
+  return '$' + p.toFixed(5);
+}
+function fmtUsdPrecise(n) {
+  if (n === null || n === undefined || !Number.isFinite(n)) return '—';
+  if (n >= 1) return '$' + n.toLocaleString('en-US', { maximumFractionDigits: 2 });
+  if (n >= 0.01) return '$' + n.toFixed(4);
+  if (n >= 0.0001) return '$' + n.toFixed(6);
+  return '$' + n.toExponential(2);
+}
+function fmtBig(n) {
+  if (!n) return '$0';
+  if (n >= 1e12) return '$' + (n / 1e12).toFixed(2) + 'T';
+  if (n >= 1e9)  return '$' + (n / 1e9).toFixed(1) + 'B';
+  if (n >= 1e6)  return '$' + (n / 1e6).toFixed(0) + 'M';
+  if (n >= 1e3)  return '$' + (n / 1e3).toFixed(1) + 'K';
+  return '$' + n.toFixed(0);
+}
+function fmtPct(v) {
+  if (!v) return '0.00%';
+  return (v * 100).toFixed(2) + '%';
+}
+function fmtQty(n, suffix = '') {
+  if (n === null || n === undefined || !Number.isFinite(n)) return '—';
+  const abs = Math.abs(n);
+  const body = abs >= 1e9 ? (n / 1e9).toFixed(2) + 'B'
+    : abs >= 1e6 ? (n / 1e6).toFixed(1) + 'M'
+    : abs >= 1e3 ? (n / 1e3).toFixed(1) + 'K'
+    : abs >= 10 ? n.toFixed(0)
+    : abs >= 1 ? n.toFixed(2)
+    : n.toFixed(4);
+  return suffix ? `${body} ${suffix}` : body;
+}
+function fmtFunding(v) {
+  if (v === null || v === undefined || !Number.isFinite(v)) return '—';
+  return (v * 100).toFixed(4) + '%';
+}
+function fmtPlainInt(v) {
+  if (v === null || v === undefined) return '—';
+  if (typeof v === 'bigint') return v.toString();
+  if (!Number.isFinite(v)) return '—';
+  return Math.round(v).toLocaleString('en-US');
+}
+function fmtFactorExpr(v) {
+  if (v === null || v === undefined) return '—';
+  let n = typeof v === 'bigint' ? v : BigInt(Math.round(v));
+  if (n === 0n) return '0';
+  const oneE18 = 1000000000000000000n;
+  if (n % oneE18 === 0n) return `${(n / oneE18).toString()} * 1e18`;
+  let exp = 0;
+  while (n % 10n === 0n) {
+    n /= 10n;
+    exp++;
+  }
+  return exp ? `${n.toString()} * 1e${exp}` : n.toString();
+}
+function fmtDecimal(v) {
+  if (v === null || v === undefined || !Number.isFinite(v)) return '—';
+  const abs = Math.abs(v);
+  if (abs >= 1000) return v.toLocaleString('en-US', { maximumFractionDigits: 0 });
+  if (abs >= 1) return String(Number(v.toFixed(8)));
+  return v.toFixed(Math.min(12, Math.max(0, Math.ceil(-Math.log10(abs || 1)) + 2))).replace(/0+$/, '').replace(/\.$/, '');
+}
+function fmtConfigPct(v) {
+  return v === null || v === undefined || !Number.isFinite(v) ? '—' : (v * 100).toFixed(2) + '%';
+}
+function fmtBps(v) {
+  return v === null || v === undefined || !Number.isFinite(v) ? '—' : (v * 10000).toFixed(2) + ' bps';
+}
+function esc(v) {
+  return String(v ?? '').replace(/[&<>"']/g, ch => ({
+    '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;'
+  }[ch]));
+}
+function jsStr(v) {
+  return JSON.stringify(String(v ?? ''));
+}
+
+function moneyToUsd(s) {
+  const raw = String(s || '').trim().replace(/[$,\s]/g, '').toUpperCase();
+  if (!raw || raw === '—') return null;
+  const mult = raw.endsWith('B') ? 1e9 : raw.endsWith('M') ? 1e6 : raw.endsWith('K') ? 1e3 : 1;
+  const n = Number(raw.replace(/[BMK]$/, ''));
+  return Number.isFinite(n) ? n * mult : null;
+}
+
+// ─── SETTINGS ────────────────────────────────────────────────────────────────
+const SETTINGS_STORAGE_KEY = 'risex-listing-screener-settings-v1';
+
+function tierInputId(tier) {
+  return 'setting-tier-' + tier.toLowerCase().replace(/[^a-z0-9]+/g, '-');
+}
+
+function refInputId(key) {
+  return 'setting-ref-' + key;
+}
+
+function tierParamInputId(tier, key) {
+  return 'setting-tier-param-' + tier.toLowerCase().replace(/[^a-z0-9]+/g, '-') + '-' + key;
+}
+
+function tierThresholdMap() {
+  return Object.fromEntries(TIER_NAMES.map(name => {
+    const row = CFG.TIERS.find(([, tier]) => tier === name);
+    return [name, row ? row[0] : 0];
+  }));
+}
+
+function tierRuleText() {
+  const byTier = tierThresholdMap();
+  return TIER_NAMES.map(t => `${t} >= ${fmtDecimal(byTier[t])}`).join(', ') + '.';
+}
+
+function normalizePositiveNumber(value, fallback, min = 0) {
+  const n = Number(value);
+  return Number.isFinite(n) && n >= min ? n : fallback;
+}
+
+function moneyInputToDisplay(value, fallback) {
+  const raw = String(value ?? '').trim();
+  const n = moneyToUsd(raw);
+  if (!(n > 0)) return fallback;
+  return fmtBig(n);
+}
+
+function tierParamsPayload() {
+  return Object.fromEntries(TIER_NAMES.map(tier => [tier, { ...CFG.TIER_PARAMS[tier] }]));
+}
+
+function applySettingsPayload(payload) {
+  const refs = payload?.refs || {};
+  CFG.REFS = {
+    depth:  normalizePositiveNumber(refs.depth,  CFG.REFS.depth,  0.000001),
+    vol:    normalizePositiveNumber(refs.vol,    CFG.REFS.vol,    0.000001),
+    es95:   normalizePositiveNumber(refs.es95,   CFG.REFS.es95,   0.000001),
+    volume: normalizePositiveNumber(refs.volume, CFG.REFS.volume, 0.000001),
+    conc:   normalizePositiveNumber(refs.conc,   CFG.REFS.conc,   0.000001),
+    spread: normalizePositiveNumber(refs.spread, CFG.REFS.spread, 0.000001),
+  };
+
+  const nextTiers = payload?.tiers || {};
+  const tierFallbacks = tierThresholdMap();
+  CFG.TIERS = TIER_NAMES
+    .map(name => [normalizePositiveNumber(nextTiers[name], tierFallbacks[name], 0), name])
+    .sort((a, b) => b[0] - a[0]);
+  CFG.TIERS.push([0, 'Rejected']);
+
+  const nextTierParams = payload?.tierParams || {};
+  for (const tier of TIER_NAMES) {
+    const current = CFG.TIER_PARAMS[tier];
+    const incoming = nextTierParams[tier] || {};
+    const maxLev = normalizePositiveNumber(incoming.maxLev, Number(current.maxLev), 0.000001);
+    const imrPct = (1 / maxLev) * 100;
+    const mmrPct = (2 / 3) * imrPct;
+    const cmrPct = (2 / 3) * mmrPct;
+    CFG.TIER_PARAMS[tier] = {
+      maxLev,
+      imr: fmtConfigPct(imrPct / 100),
+      mmr: fmtConfigPct(mmrPct / 100),
+      cmr: fmtConfigPct(cmrPct / 100),
+      oiLo: moneyInputToDisplay(incoming.oiLo, current.oiLo),
+      oiHi: moneyInputToDisplay(incoming.oiHi, current.oiHi),
+    };
+  }
+
+  CFG.EXPECTED_MIN_ORDER_USD = normalizePositiveNumber(
+    payload?.expectedMinOrderUsd,
+    CFG.EXPECTED_MIN_ORDER_USD,
+    0.000001
+  );
+}
+
+function currentSettingsPayload() {
+  return {
+    refs: { ...CFG.REFS },
+    tiers: tierThresholdMap(),
+    tierParams: tierParamsPayload(),
+    expectedMinOrderUsd: CFG.EXPECTED_MIN_ORDER_USD,
+  };
+}
+
+function saveSettings() {
+  try {
+    localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(currentSettingsPayload()));
+  } catch {}
+}
+
+function loadSettings() {
+  try {
+    const raw = localStorage.getItem(SETTINGS_STORAGE_KEY);
+    if (raw) applySettingsPayload(JSON.parse(raw));
+  } catch {}
+}
+
+function recomputeResultScores(r) {
+  if (!r?.metrics) return r;
+  const m = r.metrics;
+  const scores = {
+    depth:  scoreMetric(m.depth?.val,  CFG.REFS.depth,  CFG.WEIGHTS.depth,  false),
+    vol:    scoreMetric(m.vol?.val,    CFG.REFS.vol,    CFG.WEIGHTS.vol,    true,  CFG.VMAXES.vol),
+    es95:   scoreMetric(m.es95?.val,   CFG.REFS.es95,   CFG.WEIGHTS.es95,   true,  CFG.VMAXES.es95),
+    volume: scoreMetric(m.volume?.val, CFG.REFS.volume, CFG.WEIGHTS.volume, false),
+    conc:   scoreMetric(m.conc?.val,   CFG.REFS.conc,   CFG.WEIGHTS.conc,   false),
+    spread: scoreMetric(m.spread?.val, CFG.REFS.spread, CFG.WEIGHTS.spread, true),
+  };
+  for (const [key, score] of Object.entries(scores)) {
+    if (m[key]) {
+      m[key].score = score;
+      m[key].w = CFG.WEIGHTS[key];
+    }
+  }
+  r.totalScore = Math.round(Object.values(scores).reduce((sum, v) => sum + v, 0) * 10) / 10;
+  r.rawTier = r.allPass ? scoreToTier(r.totalScore) : 'Rejected';
+  r.finalTier = r.allPass ? computeFinalTier(r.symbol, r.rawTier, r.feedGrade, r.ageDays) : 'Rejected';
+  r.tierP = CFG.TIER_PARAMS[r.finalTier] || CFG.TIER_PARAMS['Rejected'];
+  r.whitelistCap = r.rawTier === 'Prime' && !CFG.PRIME_WHITELIST.has(r.symbol);
+  r.ageCapped = r.ageDays < CFG.AGE_MIN_DAYS;
+  return r;
+}
+
+function rerenderAfterSettings() {
+  for (const r of resultCache.values()) recomputeResultScores(r);
+  renderTokenList();
+  if (selectedCgId && resultCache.has(selectedCgId)) {
+    renderDetail(resultCache.get(selectedCgId));
+  } else if (!selectedCgId) {
+    renderWelcome();
+  }
+  refreshSideRail();
+}
+
+function renderSettingsBody() {
+  const body = document.getElementById('settings-body');
+  if (!body) return;
+  const tiers = tierThresholdMap();
+  body.innerHTML = `
+    <div class="settings-section" style="border-top:0;">
+      <div style="font-size:11px;font-weight:800;color:var(--text);letter-spacing:0.6px;text-transform:uppercase;margin-bottom:12px;">Tier Scoring</div>
+      <div class="settings-grid">
+        ${TIER_NAMES.map(tier => `
+          <div class="setting-field">
+            <label for="${tierInputId(tier)}">${esc(tier)} minimum score</label>
+            <input id="${tierInputId(tier)}" type="number" min="0" max="100" step="0.1" value="${esc(tiers[tier])}" />
+          </div>
+        `).join('')}
+      </div>
+    </div>
+    <div class="settings-section">
+      <div style="font-size:11px;font-weight:800;color:var(--text);letter-spacing:0.6px;text-transform:uppercase;margin-bottom:12px;">Tier Configuration</div>
+      <div style="display:flex;flex-direction:column;gap:12px;">
+        ${TIER_NAMES.map(tier => {
+          const p = tierParams(tier);
+          const field = (key, label, value, step = 'any', disabled = false) => `
+            <div class="setting-field">
+              <label for="${tierParamInputId(tier, key)}">${esc(label)}</label>
+              <input id="${tierParamInputId(tier, key)}" type="${key.startsWith('oi') ? 'text' : 'number'}" min="0" step="${esc(step)}" value="${esc(value)}" ${disabled ? 'disabled' : ''} />
+            </div>`;
+          return `
+            <div style="background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:12px;">
+              <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px;">
+                <span class="${tierClass(tier)}" style="font-size:11px;font-weight:800;padding:4px 9px;border-radius:6px;">${esc(tier)}</span>
+                <span style="font-size:10px;color:var(--muted);">OI ${esc(p.oiLo)} - ${esc(p.oiHi)}</span>
+              </div>
+              <div class="settings-grid">
+                ${field('maxLev', 'Max leverage', p.maxLev, '0.1')}
+                ${field('imr', 'IMR % (auto)', String(p.imr).replace('%', ''), '0.01', true)}
+                ${field('mmr', 'MMR % (auto)', String(p.mmr).replace('%', ''), '0.01', true)}
+                ${field('cmr', 'CMR % (auto)', String(p.cmr).replace('%', ''), '0.01', true)}
+                ${field('oiLo', 'OI lower limit', p.oiLo)}
+                ${field('oiHi', 'OI upper limit', p.oiHi)}
+              </div>
+            </div>`;
+        }).join('')}
+      </div>
+    </div>
+    <div class="settings-section">
+      <div style="font-size:11px;font-weight:800;color:var(--text);letter-spacing:0.6px;text-transform:uppercase;margin-bottom:12px;">Metric Reference Values</div>
+      <div class="settings-grid">
+        ${METRIC_REF_FIELDS.map(([key, label, unit]) => `
+          <div class="setting-field">
+            <label for="${refInputId(key)}">${esc(label)} (${esc(unit)})</label>
+            <input id="${refInputId(key)}" type="number" min="0" step="any" value="${esc(CFG.REFS[key])}" />
+          </div>
+        `).join('')}
+      </div>
+    </div>
+    <div class="settings-section">
+      <div class="settings-grid">
+        <div class="setting-field">
+          <label for="setting-min-order-usd">Expected min order size (USD)</label>
+          <input id="setting-min-order-usd" type="number" min="0" step="any" value="${esc(CFG.EXPECTED_MIN_ORDER_USD)}" />
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function openSettings() {
+  renderSettingsBody();
+  const overlay = document.getElementById('settings-overlay');
+  if (overlay) overlay.classList.add('open');
+}
+
+function closeSettings() {
+  const overlay = document.getElementById('settings-overlay');
+  if (overlay) overlay.classList.remove('open');
+}
+
+function applySettings(event) {
+  if (event) event.preventDefault();
+  const tiers = Object.fromEntries(TIER_NAMES.map(tier => [
+    tier,
+    document.getElementById(tierInputId(tier))?.value,
+  ]));
+  const refs = Object.fromEntries(METRIC_REF_FIELDS.map(([key]) => [
+    key,
+    document.getElementById(refInputId(key))?.value,
+  ]));
+  const tierParams = Object.fromEntries(TIER_NAMES.map(tier => [
+    tier,
+    Object.fromEntries(['maxLev', 'imr', 'mmr', 'cmr', 'oiLo', 'oiHi'].map(key => [
+      key,
+      document.getElementById(tierParamInputId(tier, key))?.value,
+    ])),
+  ]));
+  applySettingsPayload({
+    tiers,
+    tierParams,
+    refs,
+    expectedMinOrderUsd: document.getElementById('setting-min-order-usd')?.value,
+  });
+  saveSettings();
+  closeSettings();
+  rerenderAfterSettings();
+}
+
+function resetSettings() {
+  applySettingsPayload(DEFAULT_SETTINGS);
+  try { localStorage.removeItem(SETTINGS_STORAGE_KEY); } catch {}
+  renderSettingsBody();
+  rerenderAfterSettings();
+}
+
+function cappedPower10ForNotional(price, maxUsd) {
+  if (!(price > 0) || !(maxUsd > 0)) return { value: null, exp: null };
+  const exp = Math.floor(Math.log10(maxUsd / price));
+  return { value: 10 ** exp, exp };
+}
+
+function cappedPower10(target) {
+  if (!(target > 0)) return { value: null, exp: null };
+  const exp = Math.floor(Math.log10(target));
+  return { value: 10 ** exp, exp };
+}
+
+function suggestedStepPrice(price) {
+  if (!(price > 0)) return { value: null, exp: null };
+  if (price >= 10000) return { value: 0.1, exp: -1 };
+  if (price >= 1000) return { value: 0.01, exp: -2 };
+  const hardcap = cappedPower10(price * 0.0001);
+  if (price >= 100) {
+    const v = hardcap.value === null ? null : Math.min(hardcap.value, 0.01);
+    return { value: v, exp: v === 0.01 ? -2 : hardcap.exp };
+  }
+  return hardcap;
+}
+
+function roundToMultiple(value, multiple, minValue = multiple) {
+  if (!(value > 0) || !(multiple > 0)) return minValue;
+  return Math.max(minValue, Math.round(value / multiple) * multiple);
+}
+
+function oiLimitStepRound(value) {
+  return value && value < 500000 ? 50000 : 500000;
+}
+
+function tierParams(tier) {
+  return CFG.TIER_PARAMS[tier] || CFG.TIER_PARAMS['Rejected'];
+}
+
+function pctStringToFraction(value) {
+  const n = Number(String(value ?? '').replace('%', '').trim());
+  return Number.isFinite(n) ? n / 100 : null;
+}
+
+const ONE_E18 = 1000000000000000000n;
+function mmFactorFromMaxLev(maxLev) {
+  const n = Number(maxLev);
+  if (!(n > 0)) return null;
+  if (Number.isInteger(n) && n <= Number.MAX_SAFE_INTEGER) {
+    return (BigInt(n) * 3n * ONE_E18) / 2n;
+  }
+  return BigInt(Math.round((3 * n / 2) * 1e18));
+}
+
+function computeSuggestedConfig(r, tier = r?.finalTier) {
+  const tierP = tierParams(tier);
+  const maxLev = Number(tierP?.maxLev);
+  const price = Number(r?.price);
+  if (!(maxLev > 0) || !(price > 0)) return null;
+
+  const imr = 1 / maxLev;
+  const mmr = (2 / 3) * imr;
+  const mmFactor = mmFactorFromMaxLev(maxLev);
+  const stepPrice = suggestedStepPrice(price);
+  const stepSize = cappedPower10ForNotional(price, STEP_SIZE_MAX_USD);
+  const stepNotional = stepSize.value ? stepSize.value * price : null;
+  const minOrderStep = stepNotional ? roundToMultiple(CFG.EXPECTED_MIN_ORDER_USD / stepNotional, 5, 5) : null;
+  const oiLowerUsd = moneyToUsd(tierP?.oiLo);
+  const oiLimitRaw = oiLowerUsd && stepNotional ? oiLowerUsd / stepNotional : null;
+  const oiRound = oiLimitStepRound(oiLimitRaw);
+  const oiLimitSteps = oiLimitRaw ? roundToMultiple(oiLimitRaw, oiRound, oiRound) : null;
+
+  return {
+    maxLev,
+    imr,
+    mmr,
+    mmFactor,
+    stepPrice: stepPrice.value,
+    stepSize: stepSize.value,
+    minOrderStep,
+    oiLimitSteps,
+    maxOrderStep: oiLimitSteps ? Math.round(oiLimitSteps / 10) : null,
+    priceBand: 0.05,
+    impactNotional: 50,
+    minOrderUsd: minOrderStep && stepNotional ? minOrderStep * stepNotional : null,
+    oiLimitUsd: oiLimitSteps && stepNotional ? oiLimitSteps * stepNotional : null,
+    tier,
+    tierP,
+  };
+}
+
+function finalTierForRawOption(r, rawTier) {
+  if (!r?.allPass || rawTier === 'Rejected') return 'Rejected';
+  return computeFinalTier(r.symbol, rawTier, r.feedGrade, r.ageDays);
+}
+
+function suggestedTierOptions(r) {
+  if (!r?.allPass) return [];
+  const options = new Set([r.finalTier]);
+  const score = Number(r.totalScore);
+  if (!Number.isFinite(score)) return [...options].filter(t => t && t !== 'Rejected');
+
+  const boundaries = CFG.TIERS
+    .filter(([, tier]) => tier !== 'Rejected')
+    .map(([threshold, upperTier], i) => ({
+      threshold,
+      upperTier,
+      lowerTier: CFG.TIERS[i + 1]?.[1],
+    }))
+    .filter(b => b.lowerTier);
+
+  for (const b of boundaries) {
+    if (Math.abs(score - b.threshold) <= b.threshold * 0.10) {
+      options.add(finalTierForRawOption(r, b.upperTier));
+      options.add(finalTierForRawOption(r, b.lowerTier));
+    }
+  }
+
+  const rest = [...options]
+    .filter(t => t && t !== 'Rejected' && t !== r.finalTier)
+    .sort((a, b) => CFG.TIER_ORDER.indexOf(a) - CFG.TIER_ORDER.indexOf(b));
+  return [r.finalTier, ...rest].filter(t => t && t !== 'Rejected');
+}
+
+function tierClass(tier) {
+  const m = { Prime:'tier-prime', Major:'tier-major', 'Mid-Cap':'tier-midcap',
+              'Small-Cap':'tier-smallcap', 'Micro-Cap':'tier-microcap' };
+  return m[tier] || 'tier-rejected';
+}
+function tierColor(tier) {
+  const m = { Prime:'#f97316', Major:'#60a5fa', 'Mid-Cap':'#c084fc',
+              'Small-Cap':'#f59e0b', 'Micro-Cap':'#d97706' };
+  return m[tier] || '#ef4444';
+}
+function scoreColor(s) {
+  if (s >= 90) return '#f97316';
+  if (s >= 75) return '#60a5fa';
+  if (s >= 60) return '#c084fc';
+  if (s >= 45) return '#f59e0b';
+  if (s >= 25) return '#d97706';
+  return '#ef4444';
+}
+function avatarColor(sym) {
+  const pal = ['#f97316','#60a5fa','#a78bfa','#34d399','#f472b6','#fbbf24','#fb7185','#38bdf8'];
+  let h = 0;
+  for (let i = 0; i < sym.length; i++) h = (h * 31 + sym.charCodeAt(i)) & 0xffff;
+  return pal[h % pal.length];
+}
+function gateIcon(key) {
+  const m = {
+    fdmc:    `<svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>`,
+    binance: `<svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 6l3 1m0 0l-3 9a5.002 5.002 0 006.001 0M6 7l3 9M6 7l6-2m6 2l3-1m-3 1l-3 9a5.002 5.002 0 006.001 0M18 7l3 9m-3-9l-6-2m0-2v2m0 16V5m0 16H9m3 0h3"/></svg>`,
+    safety:  `<svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"/></svg>`,
+    feed:    `<svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>`,
+  };
+  return m[key] || '';
+}
+function gateLabel(key) {
+  return { fdmc:'FDMC Gate', binance:'Binance Perps', safety:'Safety Score', feed:'Price Feed' }[key] || key;
+}
+
+// ─── RENDER: token list ───────────────────────────────────────────────────────
+function setFilter(f, btn) {
+  currentFilter = f;
+  document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  renderTokenList();
+}
+
+function renderTokenList() {
+  const list = searchMode ? searchResults : tokenList;
+  const el   = document.getElementById('token-list');
+  const cnt  = document.getElementById('list-count');
+  cnt.textContent = list.length + (list.length !== 1 ? ' TOKENS' : ' TOKEN');
+
+  // Apply filter to cached results (unanalyzed tokens shown in "All" only)
+  const filtered = list.filter(t => {
+    if (currentFilter === 'all') return true;
+    const r = resultCache.get(t.cgId);
+    if (!r) return false;
+    if (currentFilter === 'passing')  return r.allPass;
+    if (currentFilter === 'rejected') return !r.allPass;
+    return true;
+  });
+
+  el.innerHTML = filtered.map(t => {
+    const r     = resultCache.get(t.cgId);
+    const color = avatarColor(t.symbol);
+    const active = t.cgId === selectedCgId;
+    const tc    = r ? tierClass(r.finalTier) : '';
+    const tLabel = r ? r.finalTier : null;
+    const dot = r
+      ? `<div style="width:5px;height:5px;border-radius:50%;background:${r.allPass ? 'var(--green)' : 'var(--red)'};flex-shrink:0;margin-top:1px;"></div>`
+      : '';
+
+    const scoreDisplay = r
+      ? `<span class="mono" style="font-size:13px;font-weight:700;color:${scoreColor(r.totalScore)};">${r.totalScore}</span>`
+      : `<span class="mono" style="font-size:10px;color:var(--muted);">—</span>`;
+
+    const avatar = t.thumb
+      ? `<img src="${t.thumb}" style="width:32px;height:32px;border-radius:8px;object-fit:cover;border:1px solid ${color}40;" onerror="this.style.display='none'" />`
+      : `<div style="width:32px;height:32px;border-radius:8px;background:${color}20;border:1px solid ${color}40;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:12px;color:${color};flex-shrink:0;">${t.symbol[0]}</div>`;
+
+    return `
+      <div class="token-card ${active ? 'active' : ''}"
+        onclick="selectToken('${t.cgId}','${t.symbol}',${t.safetyScore},'${t.feedGrade}',${t.cmcId || 'null'})"
+        style="display:flex;align-items:center;gap:8px;padding:8px;margin-bottom:2px;border-radius:8px;border:1px solid ${active ? 'var(--orange)' : 'transparent'};cursor:pointer;transition:all 0.12s;">
+        <span class="mono" style="font-size:10px;color:var(--muted);width:22px;flex-shrink:0;text-align:right;">${t.rank ? '#'+t.rank : '—'}</span>
+        ${avatar}
+        <div style="flex:1;min-width:0;">
+          <div style="display:flex;align-items:center;gap:5px;">
+            <span style="font-weight:700;font-size:13px;color:var(--text);">${t.symbol}</span>
+            ${dot}
+          </div>
+          <div style="font-size:10px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:1px;">${t.name}</div>
+        </div>
+        <div style="flex-shrink:0;text-align:right;">
+          ${scoreDisplay}
+          ${tLabel ? `<div style="margin-top:2px;"><span class="${tc}" style="font-size:9px;font-weight:700;letter-spacing:0.3px;padding:2px 5px;border-radius:4px;">${tLabel}</span></div>` : ''}
+        </div>
+      </div>
+    `;
+  }).join('');
+}
+
+// ─── RENDER: loading ──────────────────────────────────────────────────────────
+function renderLoading(msg) {
+  document.getElementById('detail-panel').innerHTML = `
+    <div style="display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:300px;gap:16px;">
+      <div class="spinner"></div>
+      <p id="loading-msg" style="font-size:13px;color:var(--muted);margin:0;">${msg || 'Analyzing…'}</p>
+    </div>`;
+}
+
+function renderRefreshButton(disabled = false) {
+  return `
+    <button class="icon-btn" onclick="retrySelected()" ${disabled ? 'disabled' : ''}
+      title="${disabled ? 'Refreshing' : 'Refresh data'}" aria-label="${disabled ? 'Refreshing' : 'Refresh data'}">
+      ${disabled
+        ? '<span class="spinner-sm"></span>'
+        : '<svg width="16" height="16" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a9 9 0 00-15.74-5.74L3 8"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 3v5h5"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 12a9 9 0 0015.74 5.74L21 16"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M16 16h5v5"/></svg>'}
+    </button>`;
+}
+
+// ─── RENDER: progressive (partial state) ─────────────────────────────────────
+// Renders detail panel with whatever data is available; nulls show spinners.
+// State shape:
+//   .symbol, .safetyScore, .feedGrade  — always set
+//   .detail  — null | { name, price, fdmc, mcap, rank, thumb }       (after step 0)
+//   .tickers — null | { allTickers, cgDepth,                         (after tickers)
+//   .binance — null | { pass, value }                                (after Binance futures)
+//                        depthVal, spreadVal, concVal, exchanges }
+//   .ohlc    — null | { parkRes }                                    (after ohlc)
+//   .chart   — null | { es95Res, volVal }                            (after chart)
+//   .hl      — null | { hlDepth }                                    (after HL)
+function renderProgressiveDetail(st) {
+  // Guard: ignore stale updates from a previous selection
+  if (st.cgId !== selectedCgId) return;
+
+  const panel = document.getElementById('detail-panel');
+  const { symbol, safetyScore, feedGrade } = st;
+  const d  = st.detail;
+  const tk = st.tickers;
+  const ok = st.ohlc;
+  const ck = st.chart;
+  const hk = st.hl;
+  const errs = st.errors || {};
+
+  const color = avatarColor(symbol);
+  const ld = `<span class="spinner-sm"></span>`;
+  const fail = msg => `<span style="font-size:11px;font-weight:700;color:var(--red);">${msg || 'Unavailable'}</span>`;
+  const metricErr = key => {
+    if (key === 'depth' || key === 'conc' || key === 'spread') return errs.tickers;
+    if (key === 'vol') return errs.ohlc;
+    if (key === 'es95' || key === 'volume') return errs.chart;
+    return null;
+  };
+  let html = '';
+
+  // ── Header ──────────────────────────────────────────────────────────────────
+  const name  = d?.name  || symbol;
+  const price = d?.price ?? null;
+  const fdmc  = d?.fdmc  ?? null;
+  const mcap  = d?.mcap  ?? null;
+  const rank  = d?.rank  ?? null;
+  const thumb = d?.thumb ?? null;
+
+  const avatar = thumb
+    ? `<img src="${thumb}" style="width:52px;height:52px;border-radius:14px;object-fit:cover;border:1.5px solid ${color}50;" onerror="this.style.display='none'" />`
+    : `<div style="width:52px;height:52px;border-radius:14px;background:${color}20;border:1.5px solid ${color}50;display:flex;align-items:center;justify-content:center;font-weight:800;font-size:20px;color:${color};">${symbol[0]}</div>`;
+
+  html += `
+    <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:24px;flex-wrap:wrap;margin-bottom:28px;">
+      <div style="display:flex;align-items:center;gap:16px;">
+        ${avatar}
+        <div>
+          <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+            <h1 style="font-size:22px;font-weight:800;color:var(--text);margin:0;letter-spacing:-0.5px;">${name}</h1>
+            <span style="font-size:14px;font-weight:600;color:var(--muted);">${symbol}</span>
+            ${!d ? (errs.detail ? fail(errs.detail) : ld) : ''}
+          </div>
+          <div style="font-size:12px;color:var(--muted);margin-top:4px;">Rank ${rank ? '#'+rank : '—'} &bull; Data: CoinGecko + Hyperliquid</div>
+        </div>
+      </div>
+      <div style="display:flex;gap:12px;flex-wrap:wrap;">
+        ${renderRefreshButton(!st.complete)}
+        ${[['PRICE', price!==null?fmtPrice(price):(errs.detail?fail(errs.detail):ld)], ['FDMC', fdmc!==null?fmtBig(fdmc):(errs.detail?fail(errs.detail):ld)], ['MCAP', mcap!==null?fmtBig(mcap):(errs.detail?fail(errs.detail):ld)]].map(([l,v]) => `
+          <div style="background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:12px 18px;text-align:right;">
+            <div style="font-size:11px;color:var(--muted);margin-bottom:2px;font-weight:500;">${l}</div>
+            <div class="mono" style="font-size:18px;font-weight:700;color:var(--text);">${v}</div>
+          </div>`).join('')}
+      </div>
+    </div>
+  `;
+
+  // ── Gates ───────────────────────────────────────────────────────────────────
+  const fdmcPass_   = fdmc !== null ? fdmc >= CFG.FDMC_MIN : null;
+  const safetyPass_ = safetyScore >= CFG.SAFETY_PASS_MIN;
+  const safetyCond_ = !safetyPass_ && safetyScore >= CFG.SAFETY_COND_MIN;
+  const feedPass_   = feedGrade !== 'F';
+  const binPass_    = st.binance?.pass ?? null;  // null = still loading
+
+  const gateState = {
+    fdmc:    fdmcPass_===null ? (errs.detail ? { error: errs.detail } : 'loading') : { pass: fdmcPass_,  value: fmtBig(fdmc) + (fdmcPass_ ? ' ≥ $100M' : ' < $100M') },
+    binance: binPass_===null  ? (errs.binance ? { error: errs.binance } : 'loading') : { pass: binPass_,   value: st.binance.value },
+    safety:  { pass: safetyPass_||safetyCond_, cond: safetyCond_, value: `Score: ${safetyScore}/100${safetyCond_ ? ' (conditional, 14d pre-listing)' : ''}` },
+    feed:    { pass: feedPass_, value: `Feed Grade: ${feedGrade}` },
+  };
+  const scoreBlocked = st.complete && (!d || !tk || !ok || !ck);
+
+  html += `
+    <div style="margin-bottom:24px;">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:14px;">
+        <svg width="16" height="16" fill="none" stroke="var(--orange)" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4M7.835 4.697a3.42 3.42 0 001.946-.806 3.42 3.42 0 014.438 0 3.42 3.42 0 001.946.806 3.42 3.42 0 013.138 3.138 3.42 3.42 0 00.806 1.946 3.42 3.42 0 010 4.438 3.42 3.42 0 00-.806 1.946 3.42 3.42 0 01-3.138 3.138 3.42 3.42 0 00-1.946.806 3.42 3.42 0 01-4.438 0 3.42 3.42 0 00-1.946-.806 3.42 3.42 0 01-3.138-3.138 3.42 3.42 0 00-.806-1.946 3.42 3.42 0 010-4.438 3.42 3.42 0 00.806-1.946 3.42 3.42 0 013.138-3.138z"/></svg>
+        <h2 style="font-size:14px;font-weight:700;color:var(--text);margin:0;">LISTING GATES</h2>
+        <span style="font-size:11px;color:var(--muted);">All must pass</span>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
+        ${Object.entries(gateState).filter(([key]) => ACTIVE_GATE_KEYS.includes(key)).map(([key, g]) => `
+          <div class="gate-card">
+            <div style="display:flex;align-items:center;justify-content:space-between;">
+              <div style="display:flex;align-items:center;gap:8px;color:var(--muted);">
+                ${gateIcon(key)}<span style="font-size:12px;font-weight:600;">${gateLabel(key)}</span>
+              </div>
+              ${g === 'loading'
+                ? `<span>${ld}</span>`
+                : g.error
+                  ? `<span style="font-size:11px;font-weight:700;padding:3px 9px;border-radius:5px;letter-spacing:0.5px;background:rgba(239,68,68,0.12);color:var(--red);border:1px solid rgba(239,68,68,0.25);">ERR</span>`
+                  : `<span style="font-size:11px;font-weight:700;padding:3px 9px;border-radius:5px;letter-spacing:0.5px;
+                    ${g.pass
+                      ? (g.cond ? 'background:rgba(245,158,11,0.12);color:var(--yellow);border:1px solid rgba(245,158,11,0.3);'
+                                : 'background:rgba(34,197,94,0.12);color:var(--green);border:1px solid rgba(34,197,94,0.25);')
+                      : 'background:rgba(239,68,68,0.12);color:var(--red);border:1px solid rgba(239,68,68,0.25);'}">
+                    ${g.pass ? (g.cond ? 'COND' : 'PASS') : 'FAIL'}
+                  </span>`}
+            </div>
+            ${g !== 'loading' ? `<div style="font-size:12px;color:${g.error || !g.pass ? 'var(--red)' : 'var(--muted)'};margin-top:2px;">${g.error || g.value}</div>` : ''}
+          </div>`).join('')}
+      </div>
+    </div>
+  `;
+
+  // ── Score placeholder ────────────────────────────────────────────────────────
+  html += `
+    <div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:22px 24px;margin-bottom:20px;display:flex;align-items:center;gap:16px;">
+        ${scoreBlocked
+          ? `<div style="width:20px;height:20px;border-radius:50%;border:2px solid rgba(239,68,68,0.35);display:flex;align-items:center;justify-content:center;color:var(--red);font-size:12px;font-weight:800;flex-shrink:0;">!</div>`
+          : `<div class="spinner" style="flex-shrink:0;"></div>`}
+        <div>
+          <div style="font-size:12px;color:var(--muted);font-weight:500;margin-bottom:4px;">LISTING SCORE</div>
+        <div style="font-size:12px;color:var(--muted);">${scoreBlocked ? 'Score unavailable until required data loads.' : 'Computing metrics…'}</div>
+      </div>
+    </div>
+  `;
+
+  // ── Metric breakdown ─────────────────────────────────────────────────────────
+  // Compute depth with current HL data (updates when HL arrives)
+  const curDepth = tk ? spotDepth(tk.cgDepth, hk?.hlDepth || {}) : null;
+
+  const pmv = {
+    depth:  tk  ? { val: curDepth,      w: CFG.WEIGHTS.depth,  d: METRIC_DETAILS.depth,  rawFmt: fmtBig(curDepth),         flag: null }          : null,
+    vol:    ok  ? { val: ok.parkRes.val, w: CFG.WEIGHTS.vol,    d: METRIC_DETAILS.vol,    rawFmt: fmtPct(ok.parkRes.val),   flag: ok.parkRes.flag } : null,
+    es95:   ck  ? { val: ck.es95Res.val, w: CFG.WEIGHTS.es95,   d: METRIC_DETAILS.es95,   rawFmt: fmtPct(ck.es95Res.val),  flag: ck.es95Res.flag } : null,
+    volume: ck  ? { val: ck.volVal,      w: CFG.WEIGHTS.volume, d: METRIC_DETAILS.volume, rawFmt: fmtBig(ck.volVal)+'/d',  flag: null }            : null,
+    conc:   tk  ? { val: tk.concVal,     w: CFG.WEIGHTS.conc,   d: METRIC_DETAILS.conc,   rawFmt: tk.concVal.toFixed(3),   flag: null }            : null,
+    spread: tk  ? { val: tk.spreadVal,   w: CFG.WEIGHTS.spread, d: METRIC_DETAILS.spread, rawFmt: fmtPct(tk.spreadVal),    flag: null }            : null,
+  };
+
+  function pmScore(key, m) {
+    if (!m) return null;
+    switch(key) {
+      case 'depth':  return scoreMetric(m.val, CFG.REFS.depth,  m.w, false);
+      case 'vol':    return scoreMetric(m.val, CFG.REFS.vol,    m.w, true,  CFG.VMAXES.vol);
+      case 'es95':   return scoreMetric(m.val, CFG.REFS.es95,   m.w, true,  CFG.VMAXES.es95);
+      case 'volume': return scoreMetric(m.val, CFG.REFS.volume, m.w, false);
+      case 'conc':   return scoreMetric(m.val, CFG.REFS.conc,   m.w, false);
+      case 'spread': return scoreMetric(m.val, CFG.REFS.spread, m.w, true);
+    }
+    return 0;
+  }
+
+  const LABELS = { depth:'2% Market Depth', vol:'Parkinson Vol (90d ann.)', es95:'ES 95% (tail loss)', volume:'30d Avg Daily Volume', conc:'Concentration (1−HHI)', spread:'Avg Book Spread' };
+
+  html += `
+    <div style="margin-bottom:20px;">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:14px;">
+        <svg width="16" height="16" fill="none" stroke="var(--orange)" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"/></svg>
+        <h2 style="font-size:14px;font-weight:700;color:var(--text);margin:0;">METRIC BREAKDOWN</h2>
+        <span style="font-size:11px;color:var(--muted);">Updating…</span>
+      </div>
+      <div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;overflow:hidden;">
+        <div style="display:grid;grid-template-columns:1fr 180px 90px 90px;padding:10px 16px;border-bottom:1px solid var(--border);">
+          ${['METRIC','SCORE / WEIGHT','SUB-SCORE','RAW VALUE'].map((h,i) => `<div style="font-size:11px;font-weight:600;color:var(--muted);letter-spacing:0.5px;${i>1?'text-align:right;':''}">${h}</div>`).join('')}
+        </div>
+        ${Object.entries(pmv).map(([key, m]) => {
+          const det = METRIC_DETAILS[key];
+          const acc = `<div class="accordion-content" id="acc-${key}"><div style="padding:16px 20px;background:#0e1016;border-bottom:1px solid var(--border);"><div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:16px;">${[['WHAT',det.what],['WHY IT MATTERS',det.why],['FORMULA',det.formula]].map(([t,v],i)=>`<div><div style="font-size:10px;font-weight:700;color:var(--orange);letter-spacing:0.8px;margin-bottom:6px;">${t}</div>${i===2?`<div class="mono" style="font-size:11px;color:#a5b4fc;background:rgba(99,102,241,0.08);border:1px solid rgba(99,102,241,0.2);border-radius:6px;padding:8px 10px;line-height:1.6;">${v}</div>`:`<p style="font-size:12px;color:var(--muted);margin:0;line-height:1.5;">${v}</p>`}</div>`).join('')}</div></div></div>`;
+          if (!m) {
+            const e = metricErr(key);
+            return `<div>
+              <div class="metric-row" onclick="toggleMetric('${key}')"
+                style="display:grid;grid-template-columns:1fr 180px 90px 90px;padding:12px 16px;border-bottom:1px solid var(--border);align-items:center;">
+                <div style="display:flex;align-items:center;gap:8px;">
+                  <svg style="color:var(--muted);flex-shrink:0;" width="12" height="12" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M9 5l7 7-7 7"/></svg>
+                  <div>
+                    <div style="font-size:13px;font-weight:600;color:var(--text);">${LABELS[key]}</div>
+                    <div style="font-size:11px;color:var(--muted);">${det.hiB ? '↑ higher is better' : '↓ lower is better'}</div>
+                  </div>
+                </div>
+                <div style="padding-right:16px;display:flex;align-items:center;">${e ? fail(e) : ld}</div>
+                <div style="text-align:right;">${e ? fail('ERR') : ld}</div>
+                <div style="text-align:right;">${e ? fail('—') : ld}</div>
+              </div>${acc}</div>`;
+          }
+          const sc = pmScore(key, m);
+          const pct = Math.round((sc / m.w) * 100);
+          const bc = pct >= 80 ? '#22c55e' : pct >= 50 ? '#f59e0b' : '#ef4444';
+          return `<div>
+            <div class="metric-row" onclick="toggleMetric('${key}')"
+              style="display:grid;grid-template-columns:1fr 180px 90px 90px;padding:12px 16px;border-bottom:1px solid var(--border);align-items:center;transition:background 0.15s;">
+              <div style="display:flex;align-items:center;gap:8px;">
+                <svg style="color:var(--muted);flex-shrink:0;" width="12" height="12" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M9 5l7 7-7 7"/></svg>
+                <div>
+                  <div style="font-size:13px;font-weight:600;color:var(--text);">${LABELS[key]}</div>
+                  <div style="font-size:11px;color:var(--muted);">${det.hiB ? '↑ higher is better' : '↓ lower is better'}${m.flag ? ' · <span style="color:var(--yellow);">⚠ '+m.flag+'</span>' : ''}</div>
+                </div>
+              </div>
+              <div style="padding-right:16px;">
+                <div style="display:flex;justify-content:space-between;margin-bottom:5px;">
+                  <span style="font-size:10px;color:var(--muted);">${sc.toFixed(1)}/${m.w} pts</span>
+                  <span style="font-size:10px;color:${bc};font-weight:600;">${pct}%</span>
+                </div>
+                <div style="background:var(--elevated);border-radius:3px;height:5px;overflow:hidden;">
+                  <div style="height:100%;width:${pct}%;background:${bc};border-radius:3px;"></div>
+                </div>
+              </div>
+              <div class="mono" style="text-align:right;font-size:14px;font-weight:700;color:${bc};">${sc.toFixed(1)}<span style="font-size:11px;color:var(--muted);font-weight:400;">/${m.w}</span></div>
+              <div class="mono" style="text-align:right;font-size:12px;font-weight:600;color:var(--text);">${m.rawFmt}</div>
+            </div>${acc}</div>`;
+        }).join('')}
+        <div style="display:grid;grid-template-columns:1fr 180px 90px 90px;padding:12px 16px;background:rgba(249,115,22,0.05);">
+          <div style="font-size:13px;font-weight:700;color:var(--text);">Total Score</div>
+          <div></div>
+          <div class="mono" style="text-align:right;font-size:14px;font-weight:800;color:var(--muted);">${scoreBlocked ? fail('ERR') : ld}</div>
+          <div></div>
+        </div>
+      </div>
+    </div>
+  `;
+
+  // ── Exchange presence (shown as soon as tickers arrive) ──────────────────────
+  if (tk?.exchanges?.length) {
+    html += `
+      <div style="margin-bottom:8px;">
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:12px;">
+          <svg width="16" height="16" fill="none" stroke="var(--orange)" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a9 9 0 01-9 9m9-9a9 9 0 00-9-9m9 9H3m9 9a9 9 0 01-9-9m9 9c1.657 0 3-4.03 3-9s-1.343-9-3-9m0 18c-1.657 0-3-4.03-3-9s1.343-9 3-9m-9 9a9 9 0 019-9"/></svg>
+          <h2 style="font-size:14px;font-weight:700;color:var(--text);margin:0;">EXCHANGE PRESENCE</h2>
+          <span style="font-size:11px;color:var(--muted);">Tier-1/2 only</span>
+        </div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;">
+          ${tk.exchanges.map(ex => `<span class="exchange-badge ${CFG.TIER1.has(ex)?'t1':'t2'}">${ex}${CFG.TIER1.has(ex)?' T1':' T2'}</span>`).join('')}
+        </div>
+      </div>
+    `;
+  }
+
+  panel.innerHTML = html;
+}
+
+// ─── RENDER: error ────────────────────────────────────────────────────────────
+function renderError(err, symbol) {
+  const isRL = err.isRateLimit;
+  document.getElementById('detail-panel').innerHTML = `
+    <div style="display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:300px;gap:16px;text-align:center;">
+      <svg width="40" height="40" fill="none" stroke="${isRL ? 'var(--yellow)' : 'var(--red)'}" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M12 9v2m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/>
+      </svg>
+      <div>
+        <p style="font-size:15px;font-weight:700;color:var(--text);margin:0 0 6px;">${isRL ? 'Rate limit reached' : 'Error fetching data'}</p>
+        <p style="font-size:12px;color:var(--muted);margin:0;">${isRL ? 'CoinGecko free tier: 30 req/min. Wait ~60s and try again.' : err.message}</p>
+        ${symbol ? `<p style="font-size:11px;color:var(--muted);margin:8px 0 0;">Symbol: ${symbol}</p>` : ''}
+      </div>
+      <button onclick="retrySelected()" style="background:rgba(249,115,22,0.15);border:1px solid rgba(249,115,22,0.4);color:var(--orange);padding:8px 20px;border-radius:8px;font-size:12px;font-weight:600;cursor:pointer;">Retry</button>
+    </div>`;
+}
+
+// ─── RENDER: RISEx markets ───────────────────────────────────────────────────
+function numOrNull(v) {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+}
+
+function normalizeRiseMarket(m) {
+  const displayName = m.display_name || m.config?.name || m.underlying || m.base_asset_symbol || '';
+  if (!displayName || /\bdeprecated\b/i.test(displayName) || m.visible === false) return null;
+
+  const symbol = String(displayName).split('/')[0].replace(/[^A-Za-z0-9]/g, '').toUpperCase();
+  if (!symbol) return null;
+  const markPrice = numOrNull(m.mark_price) ?? numOrNull(m.index_price) ?? numOrNull(m.last_price);
+  const lastPrice = numOrNull(m.last_price);
+  const change24h = numOrNull(m.change_24h);
+  const prevPrice = lastPrice !== null && change24h !== null ? lastPrice - change24h : null;
+  const changePct24h = prevPrice && prevPrice > 0 && change24h !== null ? change24h / prevPrice : null;
+  const openInterest = numOrNull(m.open_interest);
+  const oiLimit = numOrNull(m.config?.open_interest_limit);
+  const stepSize = numOrNull(m.config?.step_size);
+  const stepPrice = numOrNull(m.config?.step_price);
+  const maxLeverage = numOrNull(m.config?.max_leverage);
+  const mmFactor = numOrNull(m.config?.maintenance_margin_factor);
+  const minOrderSize = numOrNull(m.config?.min_order_size);
+
+  return {
+    id: m.market_id,
+    symbol,
+    name: displayName,
+    quote: m.quote_asset_symbol || 'USDC',
+    status: m.post_only ? 'POST ONLY' : (m.available ? 'LIVE' : 'OFFLINE'),
+    postOnly: Boolean(m.post_only),
+    available: Boolean(m.available),
+    markPrice,
+    lastPrice,
+    change24h,
+    changePct24h,
+    volume24h: numOrNull(m.quote_volume_24h),
+    openInterest,
+    openInterestUsd: openInterest !== null && markPrice !== null ? openInterest * markPrice : null,
+    oiLimit,
+    oiLimitUsd: oiLimit !== null && markPrice !== null ? oiLimit * markPrice : null,
+    maxLeverage,
+    stepSize,
+    stepPrice,
+    mmFactor,
+    minOrderSize,
+    minOrderStep: minOrderSize !== null && stepSize ? minOrderSize / stepSize : null,
+    oiLimitSteps: oiLimit !== null && stepSize ? oiLimit / stepSize : null,
+    config: m.config || {},
+    funding8h: numOrNull(m.funding_rate_8h),
+    canScreen: Boolean(KNOWN[symbol]),
+  };
+}
+
+async function fetchRiseMarkets() {
+  let lastErr = null;
+  for (const src of RISE_MARKET_SOURCES) {
+    try {
+      const r = await fetchWithTimeout(src.url, {}, src.timeoutMs);
+      if (!r.ok) {
+        lastErr = new Error(`${src.name} ${r.status}`);
+        continue;
+      }
+      const data = await src.parse(r);
+      const markets = data?.data?.markets;
+      if (!Array.isArray(markets)) {
+        lastErr = new Error(`${src.name}: empty markets`);
+        continue;
+      }
+      return { markets, cachedAt: data?.data?.cached_at || null };
+    } catch (err) {
+      lastErr = new Error(`${src.name}: ${errMsg(err)}`);
+    }
+  }
+  throw lastErr || new Error('RISEx markets unavailable');
+}
+
+function refreshRiseMarketsSection() {
+  const el = document.getElementById('rise-markets-section');
+  if (el) el.innerHTML = renderRiseMarketsSection();
+  refreshSideRail();
+}
+
+async function loadRiseMarkets(force = false) {
+  if (riseMarketsState.status === 'loading') return;
+  if (!force && riseMarketsState.status === 'loaded') return;
+
+  riseMarketsState = { ...riseMarketsState, status: 'loading', error: null };
+  refreshRiseMarketsSection();
+  try {
+    const data = await fetchRiseMarkets();
+    const markets = data.markets
+      .map(normalizeRiseMarket)
+      .filter(Boolean)
+      .sort((a, b) => {
+        if (a.postOnly !== b.postOnly) return a.postOnly ? 1 : -1;
+        return Number(a.id) - Number(b.id);
+      });
+    riseMarketsState = { status: 'loaded', markets, error: null, cachedAt: data.cachedAt };
+    updateSyncStamp();
+  } catch (err) {
+    riseMarketsState = { status: 'error', markets: [], error: errMsg(err), cachedAt: null };
+  }
+  refreshRiseMarketsSection();
+}
+
+function retryRiseMarkets() {
+  loadRiseMarkets(true);
+}
+
+function toggleRiseMarketDetails(id) {
+  const key = String(id || '');
+  expandedRiseMarketId = expandedRiseMarketId === key ? null : key;
+  refreshSideRail();
+}
+
+function screenRiseMarket(symbol) {
+  const sym = String(symbol || '').toUpperCase();
+  const found = tokenList.find(t => t.symbol === sym);
+  const known = KNOWN[sym];
+  const t = found || (known ? {
+    symbol: sym,
+    cgId: known.cgId,
+    cmcId: known.cmcId || CMC_IDS_BY_SYMBOL[sym] || null,
+    safetyScore: known.safetyScore,
+    feedGrade: known.feedGrade,
+  } : null);
+  if (!t) return;
+  selectToken(t.cgId, t.symbol, t.safetyScore, t.feedGrade, t.cmcId || CMC_IDS_BY_SYMBOL[sym] || null);
+}
+
+function refreshSideRail() {
+  const el = document.getElementById('side-rail');
+  if (el) el.innerHTML = renderSideRail();
+}
+
+function syncStampText(date = new Date()) {
+  const pad = n => String(n).padStart(2, '0');
+  return `${date.getUTCFullYear()}-${pad(date.getUTCMonth()+1)}-${pad(date.getUTCDate())} ${pad(date.getUTCHours())}:${pad(date.getUTCMinutes())}:${pad(date.getUTCSeconds())} UTC`;
+}
+
+function updateSyncStamp(date = new Date()) {
+  const el = document.getElementById('sync-stamp');
+  if (el) el.textContent = 'LAST SYNC: ' + syncStampText(date);
+}
+
+function setAutoRefreshBusy(busy) {
+  autoRefreshBusy = busy;
+  const btn = document.getElementById('auto-refresh-btn');
+  if (!btn) return;
+  btn.disabled = busy;
+  btn.classList.toggle('refreshing', busy);
+}
+
+function scheduleAutoRefresh() {
+  if (autoRefreshTimer) clearTimeout(autoRefreshTimer);
+  autoRefreshTimer = setTimeout(runAutoRefresh, AUTO_REFRESH_MS);
+}
+
+async function runAutoRefresh() {
+  if (autoRefreshBusy) {
+    scheduleAutoRefresh();
+    return;
+  }
+  setAutoRefreshBusy(true);
+  try {
+    await loadRiseMarkets(true);
+  } finally {
+    setAutoRefreshBusy(false);
+    scheduleAutoRefresh();
+  }
+}
+
+function manualAutoRefresh() {
+  if (autoRefreshTimer) clearTimeout(autoRefreshTimer);
+  runAutoRefresh();
+}
+
+async function loadTrendingTokens(force = false) {
+  if (trendingState.status === 'loading') return;
+  if (!force && trendingState.status === 'loaded') return;
+
+  trendingState = { ...trendingState, status: 'loading', error: null };
+  refreshSideRail();
+  try {
+    const data = await cgGet('/search/trending');
+    const tokens = (data?.coins || []).map(row => row.item).filter(Boolean).slice(0, 8).map(item => ({
+      id: item.id,
+      symbol: String(item.symbol || '').toUpperCase(),
+      name: item.name || item.symbol || 'Token',
+      rank: item.market_cap_rank || null,
+      thumb: item.thumb || item.small || null,
+    }));
+    trendingState = { status: 'loaded', tokens, error: null };
+  } catch (err) {
+    trendingState = { status: 'error', tokens: [], error: errMsg(err) };
+  }
+  refreshSideRail();
+}
+
+function retryTrendingTokens() {
+  loadTrendingTokens(true);
+}
+
+function screenTrendingToken(id, symbol, rank = null) {
+  const sym = String(symbol || '').toUpperCase();
+  const known = KNOWN[sym];
+  selectToken(
+    id,
+    sym,
+    known?.safetyScore || 75,
+    known?.feedGrade || 'A',
+    known?.cmcId || CMC_IDS_BY_SYMBOL[sym] || null
+  );
+}
+
+function renderRailCard(title, subtitle, action, body) {
+  return `
+    <section style="background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:16px;margin-bottom:14px;">
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:12px;">
+        <div style="min-width:0;">
+          <div style="font-size:11px;font-weight:800;color:var(--text);letter-spacing:0.5px;text-transform:uppercase;">${title}</div>
+          ${subtitle ? `<div style="font-size:10px;color:var(--muted);margin-top:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${subtitle}</div>` : ''}
+        </div>
+        ${action || ''}
+      </div>
+      ${body}
+    </section>`;
+}
+
+function renderRailRiseMarkets() {
+  const st = riseMarketsState;
+  const action = `
+    <button class="icon-btn" onclick="retryRiseMarkets()" ${st.status === 'loading' ? 'disabled' : ''}
+      title="${st.status === 'loading' ? 'Refreshing RISEx markets' : 'Refresh RISEx markets'}"
+      aria-label="${st.status === 'loading' ? 'Refreshing RISEx markets' : 'Refresh RISEx markets'}">
+      ${st.status === 'loading'
+        ? '<span class="spinner-sm"></span>'
+        : '<svg width="15" height="15" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a9 9 0 00-15.74-5.74L3 8"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 3v5h5"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 12a9 9 0 0015.74 5.74L21 16"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M16 16h5v5"/></svg>'}
+    </button>`;
+
+  if (st.status === 'idle' || st.status === 'loading') {
+    return renderRailCard('RISEx Markets', 'Live deployed markets', action, `
+      <div style="display:flex;align-items:center;gap:10px;color:var(--muted);font-size:12px;padding:8px 0;">
+        <span class="spinner-sm"></span><span>Fetching markets...</span>
+      </div>`);
+  }
+
+  if (st.status === 'error') {
+    return renderRailCard('RISEx Markets', 'Live deployed markets', action, `
+      <div style="font-size:12px;color:var(--red);line-height:1.45;">${esc(st.error || 'Unavailable')}</div>`);
+  }
+
+  const markets = st.markets;
+  const activeCount = st.markets.filter(m => !m.postOnly && m.available).length;
+  const changeCell = m => {
+    if (m.changePct24h === null) return `<span class="mono" style="font-size:11px;color:var(--muted);">—</span>`;
+    const up = m.changePct24h >= 0;
+    return `<span class="mono" style="font-size:11px;font-weight:800;color:${up ? 'var(--green)' : 'var(--red)'};">${up ? '+' : ''}${fmtPct(m.changePct24h)}</span>`;
+  };
+  const configGrid = m => {
+    const maxLev = m.maxLeverage || null;
+    const imr = maxLev ? 1 / maxLev : null;
+    const mmr = m.mmFactor ? 1 / m.mmFactor : null;
+    const fields = [
+      ['MaxLeverage', maxLev ? `${maxLev}x` : '—'],
+      ['IMR', marginPct(imr)],
+      ['MMR', marginPct(mmr)],
+      ['mmFactor', m.mmFactor ? `${fmtDecimal(m.mmFactor)} * 1e18` : '—'],
+      ['StepPrice', fmtDecimal(m.stepPrice)],
+      ['StepSize', fmtDecimal(m.stepSize)],
+      ['MinOrderStep', fmtPlainInt(m.minOrderStep)],
+      ['OILimitSteps', fmtPlainInt(m.oiLimitSteps)],
+      ['MaxOrderStep', m.oiLimitSteps ? fmtPlainInt(m.oiLimitSteps / 10) : '—'],
+      ['PriceBand', '—'],
+      ['ImpactNotional', '—'],
+    ];
+    return `
+      <div style="grid-column:1 / -1;background:#0b0d12;border-top:1px solid var(--border);padding:10px 12px;">
+        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(94px,1fr));gap:8px 10px;">
+          ${fields.map(([label, value]) => `
+            <div>
+              <div style="font-size:9px;color:var(--muted);font-weight:800;letter-spacing:0.45px;margin-bottom:2px;">${label}</div>
+              <div class="mono" style="font-size:12px;font-weight:800;color:var(--text);word-break:break-all;">${esc(value)}</div>
+            </div>`).join('')}
+        </div>
+      </div>`;
+  };
+  return renderRailCard('RISEx Markets', `${activeCount} live · ${st.markets.length} total`, action, `
+    <div style="background:#0e1016;border:1px solid var(--border);border-radius:10px;overflow:hidden;">
+      <div class="rise-market-grid rise-market-head">
+        ${['','TOKEN','LEV','PRICE','24H','VOL','OI'].map((h, i) => `<div style="font-size:9px;font-weight:800;color:var(--muted);letter-spacing:0.45px;${i > 1 ? 'text-align:right;' : ''}">${h}</div>`).join('')}
+      </div>
+      ${markets.map(m => {
+        const rowKey = String(m.id || m.symbol);
+        const expanded = expandedRiseMarketId === rowKey;
+        const statusClass = m.postOnly ? 'post-only' : (m.available ? 'live' : 'offline');
+        return `
+          <div class="rise-market-grid rise-market-row">
+            <button onclick="${esc(`toggleRiseMarketDetails(${jsStr(rowKey)})`)}"
+              title="${expanded ? 'Hide market config' : 'Show market config'}"
+              aria-label="${expanded ? 'Hide market config' : 'Show market config'}"
+              style="width:22px;height:50px;display:flex;align-items:center;justify-content:center;background:transparent;border:none;color:var(--muted);cursor:pointer;padding:0;">
+              <svg width="13" height="13" fill="none" stroke="currentColor" viewBox="0 0 24 24" style="transform:rotate(${expanded ? 90 : 0}deg);transition:transform 0.15s;"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.2" d="M9 6l6 6-6 6"/></svg>
+            </button>
+            <button onclick="${m.canScreen ? esc(`screenRiseMarket(${jsStr(m.symbol)})`) : ''}"
+              ${m.canScreen ? '' : 'disabled'}
+              title="${m.canScreen ? 'Screen token' : 'Market only'}"
+              style="min-width:0;text-align:left;background:transparent;border:none;padding:10px 0;color:inherit;${m.canScreen ? 'cursor:pointer;' : 'cursor:default;'}">
+              <div style="min-width:0;">
+                <div style="font-size:12px;font-weight:800;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${esc(m.symbol)}</div>
+                <div class="rise-market-status ${statusClass}">${esc(m.status)}</div>
+              </div>
+            </button>
+            <div class="mono" style="font-size:11px;font-weight:800;color:var(--orange);text-align:right;">${m.maxLeverage ? m.maxLeverage + 'x' : '—'}</div>
+            <div class="mono" style="font-size:11px;font-weight:800;color:var(--text);text-align:right;white-space:nowrap;">${fmtPrice(m.markPrice)}</div>
+            <div style="text-align:right;white-space:nowrap;">${changeCell(m)}</div>
+            <div class="mono" style="font-size:11px;font-weight:800;color:var(--text);text-align:right;white-space:nowrap;">${fmtBig(m.volume24h)}</div>
+            <div class="mono" style="font-size:11px;font-weight:800;color:var(--text);text-align:right;white-space:nowrap;">${fmtBig(m.openInterestUsd)}</div>
+            ${expanded ? configGrid(m) : ''}
+          </div>`;
+      }).join('')}
+    </div>`);
+}
+
+function renderTrendingTokensSection() {
+  const st = trendingState;
+  const action = `
+    <button class="icon-btn" onclick="retryTrendingTokens()" ${st.status === 'loading' ? 'disabled' : ''}
+      title="${st.status === 'loading' ? 'Refreshing trending tokens' : 'Refresh trending tokens'}"
+      aria-label="${st.status === 'loading' ? 'Refreshing trending tokens' : 'Refresh trending tokens'}">
+      ${st.status === 'loading'
+        ? '<span class="spinner-sm"></span>'
+        : '<svg width="15" height="15" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a9 9 0 00-15.74-5.74L3 8"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 3v5h5"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 12a9 9 0 0015.74 5.74L21 16"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M16 16h5v5"/></svg>'}
+    </button>`;
+
+  if (st.status === 'idle' || st.status === 'loading') {
+    return renderRailCard('Trending Tokens', 'CoinGecko search trends', action, `
+      <div style="display:flex;align-items:center;gap:10px;color:var(--muted);font-size:12px;padding:8px 0;">
+        <span class="spinner-sm"></span><span>Starting feed...</span>
+      </div>`);
+  }
+
+  if (st.status === 'error') {
+    return renderRailCard('Trending Tokens', 'CoinGecko search trends', action, `
+      <div style="font-size:12px;color:var(--muted);line-height:1.45;">Trending feed starting soon.</div>`);
+  }
+
+  return renderRailCard('Trending Tokens', 'CoinGecko search trends', action, `
+    <div style="display:flex;flex-direction:column;gap:7px;">
+      ${st.tokens.map(t => {
+        const avatar = t.thumb
+          ? `<img src="${esc(t.thumb)}" alt="" style="width:24px;height:24px;border-radius:7px;object-fit:cover;flex-shrink:0;" onerror="this.style.display='none'" />`
+          : `<span style="width:24px;height:24px;border-radius:7px;background:${avatarColor(t.symbol)}20;border:1px solid ${avatarColor(t.symbol)}40;display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:800;color:${avatarColor(t.symbol)};flex-shrink:0;">${esc(t.symbol[0] || '?')}</span>`;
+        return `
+          <button onclick="screenTrendingToken('${esc(t.id)}','${esc(t.symbol)}',${t.rank || 'null'})"
+            style="width:100%;display:flex;align-items:center;gap:9px;text-align:left;background:#0e1016;border:1px solid var(--border);border-radius:8px;padding:9px 10px;cursor:pointer;">
+            ${avatar}
+            <span style="min-width:0;flex:1;">
+              <span style="display:block;font-size:12px;font-weight:800;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${esc(t.symbol)}</span>
+              <span style="display:block;font-size:10px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${esc(t.name)}</span>
+            </span>
+            <span class="mono" style="font-size:10px;color:var(--muted);">${t.rank ? '#'+t.rank : '—'}</span>
+          </button>`;
+      }).join('')}
+    </div>`);
+}
+
+function renderSideRail() {
+  return `
+    ${renderRailRiseMarkets()}
+    ${renderTrendingTokensSection()}
+  `;
+}
+
+function renderRiseMarketsSection() {
+  const st = riseMarketsState;
+  const shell = body => `
+    <div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:20px 24px;margin-bottom:20px;">
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:16px;">
+        <div>
+          <div style="font-size:11px;font-weight:700;color:var(--muted);letter-spacing:0.8px;text-transform:uppercase;">Currently Supported on RISEx</div>
+          <div style="font-size:11px;color:var(--muted);margin-top:4px;">Live markets from api.rise.trade/v1/markets</div>
+        </div>
+        <button class="icon-btn" onclick="retryRiseMarkets()" ${st.status === 'loading' ? 'disabled' : ''}
+          title="${st.status === 'loading' ? 'Refreshing' : 'Refresh RISEx markets'}" aria-label="${st.status === 'loading' ? 'Refreshing' : 'Refresh RISEx markets'}">
+          ${st.status === 'loading'
+            ? '<span class="spinner-sm"></span>'
+            : '<svg width="16" height="16" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a9 9 0 00-15.74-5.74L3 8"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 3v5h5"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 12a9 9 0 0015.74 5.74L21 16"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M16 16h5v5"/></svg>'}
+        </button>
+      </div>
+      ${body}
+    </div>`;
+
+  if (st.status === 'idle' || st.status === 'loading') {
+    return shell(`
+      <div style="display:flex;align-items:center;gap:10px;color:var(--muted);font-size:12px;padding:8px 0;">
+        <span class="spinner-sm"></span>
+        <span>Fetching RISEx markets...</span>
+      </div>`);
+  }
+
+  if (st.status === 'error') {
+    return shell(`
+      <div style="background:rgba(239,68,68,0.06);border:1px solid rgba(239,68,68,0.2);border-radius:8px;padding:12px 14px;color:var(--red);font-size:12px;font-weight:600;">
+        ${esc(st.error || 'RISEx markets unavailable')}
+      </div>`);
+  }
+
+  const activeCount = st.markets.filter(m => !m.postOnly && m.available).length;
+  const cachedAtMs = st.cachedAt ? Number(st.cachedAt) * 1000 : null;
+  const cachedText = cachedAtMs && Number.isFinite(cachedAtMs)
+    ? new Date(cachedAtMs).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+    : null;
+
+  return shell(`
+    <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:12px;">
+      <span style="background:rgba(34,197,94,0.10);border:1px solid rgba(34,197,94,0.25);color:var(--green);font-size:11px;font-weight:700;padding:3px 9px;border-radius:5px;">${activeCount} LIVE</span>
+      <span style="background:rgba(245,158,11,0.10);border:1px solid rgba(245,158,11,0.25);color:var(--yellow);font-size:11px;font-weight:700;padding:3px 9px;border-radius:5px;">${st.markets.length} MARKETS</span>
+      ${cachedText ? `<span style="font-size:11px;color:var(--muted);">Cached ${cachedText}</span>` : ''}
+    </div>
+    <div style="background:#0e1016;border:1px solid var(--border);border-radius:10px;overflow:auto;">
+      <div style="min-width:720px;">
+        <div style="display:grid;grid-template-columns:1.2fr 86px 96px 96px 104px 96px 74px;padding:9px 12px;border-bottom:1px solid var(--border);gap:10px;">
+          ${['MARKET','STATUS','MARK','24H VOL','OPEN INT','OI LIMIT','LEV'].map((h, i) => `<div style="font-size:10px;font-weight:700;color:var(--muted);letter-spacing:0.5px;${i > 1 ? 'text-align:right;' : ''}">${h}</div>`).join('')}
+        </div>
+        ${st.markets.map(m => {
+          const knownNote = m.canScreen ? 'Click to screen' : 'Not in reviewed config';
+          const statusStyle = m.postOnly
+            ? 'background:rgba(245,158,11,0.12);color:var(--yellow);border:1px solid rgba(245,158,11,0.3);'
+            : m.available
+              ? 'background:rgba(34,197,94,0.12);color:var(--green);border:1px solid rgba(34,197,94,0.25);'
+              : 'background:rgba(239,68,68,0.12);color:var(--red);border:1px solid rgba(239,68,68,0.25);';
+          return `
+            <div onclick="${m.canScreen ? `screenRiseMarket('${m.symbol}')` : ''}"
+              title="${knownNote}"
+              style="display:grid;grid-template-columns:1.2fr 86px 96px 96px 104px 96px 74px;padding:10px 12px;border-bottom:1px solid var(--border);gap:10px;align-items:center;${m.canScreen ? 'cursor:pointer;' : ''}">
+              <div style="display:flex;align-items:center;gap:8px;min-width:0;">
+                <div style="width:26px;height:26px;border-radius:7px;background:${avatarColor(m.symbol)}20;border:1px solid ${avatarColor(m.symbol)}40;display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:800;color:${avatarColor(m.symbol)};flex-shrink:0;">${esc(m.symbol[0])}</div>
+                <div style="min-width:0;">
+                  <div style="font-size:12px;font-weight:700;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${esc(m.name)}</div>
+                  <div style="font-size:10px;color:var(--muted);">${m.canScreen ? 'Screener ready' : 'Market only'}</div>
+                </div>
+              </div>
+              <div><span style="${statusStyle}font-size:10px;font-weight:800;padding:3px 7px;border-radius:5px;white-space:nowrap;">${m.status}</span></div>
+              <div class="mono" style="font-size:12px;font-weight:700;color:var(--text);text-align:right;">${fmtPrice(m.markPrice)}</div>
+              <div class="mono" style="font-size:12px;font-weight:700;color:var(--text);text-align:right;">${fmtBig(m.volume24h)}</div>
+              <div class="mono" style="font-size:12px;font-weight:700;color:var(--text);text-align:right;">${fmtQty(m.openInterest, m.symbol)}</div>
+              <div class="mono" style="font-size:12px;font-weight:700;color:var(--text);text-align:right;">${fmtQty(m.oiLimit, m.symbol)}</div>
+              <div class="mono" style="font-size:12px;font-weight:800;color:var(--orange);text-align:right;">${m.maxLeverage ? m.maxLeverage + 'x' : '—'}</div>
+            </div>`;
+        }).join('')}
+      </div>
+    </div>`);
+}
+
+// ─── RENDER: welcome ──────────────────────────────────────────────────────────
+function renderWelcome() {
+  document.getElementById('detail-panel').innerHTML = `
+    <div style="max-width:900px;">
+      <div style="margin-bottom:32px;">
+        <h1 style="font-size:22px;font-weight:800;color:var(--text);margin:0 0 8px;">Token Listing Screener</h1>
+        <p style="font-size:14px;color:var(--muted);line-height:1.6;margin:0;">
+          Select a token from the list or search any symbol. Live data is fetched from
+          <span style="color:var(--text);">CoinGecko</span> and
+          <span style="color:var(--text);">Hyperliquid</span> and scored against RISEx's listing criteria.
+        </p>
+      </div>
+      <!-- Pipeline -->
+      <div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:20px 24px;margin-bottom:20px;">
+        <div style="font-size:11px;font-weight:700;color:var(--muted);letter-spacing:0.8px;text-transform:uppercase;margin-bottom:16px;">Screening Pipeline</div>
+        <div style="display:flex;flex-direction:column;gap:12px;">
+          ${[
+              ['1', 'Hard Gates', 'FDMC ≥ $100M · Binance perp listed', '#ef4444'],
+            ['2', 'Market Score', '6 metrics → weighted sum → 0–100', '#f97316'],
+            ['3', 'Tier Assignment', 'Score → raw tier → feed ceiling → whitelist cap → age cap', '#60a5fa'],
+          ].map(([n, title, desc, c]) => `
+            <div style="display:flex;align-items:flex-start;gap:14px;">
+              <div style="width:24px;height:24px;border-radius:6px;background:${c}20;border:1px solid ${c}40;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;color:${c};flex-shrink:0;">${n}</div>
+              <div>
+                <div style="font-size:13px;font-weight:600;color:var(--text);">${title}</div>
+                <div style="font-size:11px;color:var(--muted);margin-top:2px;">${desc}</div>
+              </div>
+            </div>
+          `).join('')}
+        </div>
+      </div>
+
+      <!-- Metrics -->
+      <div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:20px 24px;margin-bottom:20px;">
+        <div style="font-size:11px;font-weight:700;color:var(--muted);letter-spacing:0.8px;text-transform:uppercase;margin-bottom:16px;">Market Score Metrics</div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
+          ${[
+            ['2% Market Depth', 30, 'higher', 'CASCADE INSOLVENCY', '#f97316'],
+            ['ES 95% (tail loss)', 20, 'lower', 'IMR STRESS TEST', '#60a5fa'],
+            ['30d Avg Daily Volume', 20, 'higher', 'ORACLE SCALE', '#a78bfa'],
+            ['Avg Book Spread', 10, 'lower', 'LIQUIDATION COST', '#34d399'],
+            ['Concentration 1−HHI', 10, 'higher', 'ORACLE RESILIENCE', '#f472b6'],
+            ['Parkinson Vol (90d)', 10, 'lower', 'MARGIN BUFFER', '#fbbf24'],
+          ].map(([label, w, dir, why, c]) => `
+            <div style="background:var(--elevated);border:1px solid var(--border);border-radius:8px;padding:10px 12px;">
+              <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px;">
+                <span style="font-size:11px;font-weight:600;color:var(--text);">${label}</span>
+                <span class="mono" style="font-size:11px;font-weight:700;color:${c};">w=${w}</span>
+              </div>
+              <div style="font-size:10px;color:var(--muted);">${dir === 'higher' ? '↑' : '↓'} ${dir} is better · <span style="color:${c};">${why}</span></div>
+            </div>
+          `).join('')}
+        </div>
+      </div>
+
+      <!-- Tiers -->
+      <div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:20px 24px;">
+        <div style="font-size:11px;font-weight:700;color:var(--muted);letter-spacing:0.8px;text-transform:uppercase;margin-bottom:16px;">Tier Structure</div>
+        <div style="display:flex;flex-direction:column;gap:8px;">
+          ${TIER_NAMES.map(tier => {
+            const score = '≥ ' + fmtDecimal(tierThresholdMap()[tier]);
+            const p = tierParams(tier);
+            const lev = p.maxLev + '×';
+            const imr = p.imr + ' IMR';
+            const oi = `${p.oiLo}–${p.oiHi}`;
+            const note = tier === 'Prime' ? 'BTC, ETH only' : '';
+            return `
+            <div style="display:flex;align-items:center;gap:12px;padding:8px 12px;background:var(--elevated);border-radius:8px;">
+              <span class="${tierClass(tier)}" style="font-size:11px;font-weight:700;padding:3px 8px;border-radius:5px;min-width:72px;text-align:center;">${tier}</span>
+              <span class="mono" style="font-size:12px;color:var(--text);min-width:40px;">${score}</span>
+              <span class="mono" style="font-size:12px;color:${tierColor(tier)};min-width:32px;">${lev}</span>
+              <span style="font-size:11px;color:var(--muted);">${imr} · OI ${oi}${note ? ' · '+note : ''}</span>
+            </div>
+          `}).join('')}
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function renderSuggestedListingConfig(r, sc) {
+  const configs = suggestedTierOptions(r)
+    .map(tier => computeSuggestedConfig(r, tier))
+    .filter(Boolean);
+  if (!configs.length) return '';
+
+  const renderOption = (cfg) => {
+    const color = tierColor(cfg.tier);
+    const isRecommended = cfg.tier === r.finalTier;
+    const top = [
+      ['MaxLeverage', `${cfg.maxLev}x`, color],
+      ['IMR', fmtConfigPct(cfg.imr), 'var(--text)'],
+      ['MMR', fmtConfigPct(cfg.mmr), 'var(--text)'],
+      ['mmFactor', fmtFactorExpr(cfg.mmFactor), '#a5b4fc'],
+    ];
+    const rows = [
+      ['StepPrice', fmtDecimal(cfg.stepPrice), `${fmtBps(cfg.stepPrice / r.price)} per tick`],
+      ['StepSize', fmtDecimal(cfg.stepSize), `≈ ${fmtUsdPrecise(cfg.stepSize * r.price)} per step`],
+      ['MinOrderStep', fmtPlainInt(cfg.minOrderStep), cfg.minOrderUsd ? `≈ ${fmtBig(cfg.minOrderUsd)}` : `≈ ${fmtBig(CFG.EXPECTED_MIN_ORDER_USD)}`],
+      ['OILimitSteps', fmtPlainInt(cfg.oiLimitSteps), cfg.oiLimitUsd ? `≈ ${fmtBig(cfg.oiLimitUsd)} lower OI` : `≈ ${cfg.tierP.oiLo}`],
+      ['MaxOrderStep', fmtPlainInt(cfg.maxOrderStep), cfg.oiLimitUsd ? `≈ ${fmtBig(cfg.oiLimitUsd / 10)}` : 'OILimitSteps / 10'],
+      ['PriceBand', fmtConfigPct(cfg.priceBand), ''],
+      ['ImpactNotional', fmtBig(cfg.impactNotional), ''],
+    ];
+
+    return `
+      <div style="background:var(--surface);border:1px solid ${isRecommended ? 'rgba(249,115,22,0.55)' : 'var(--border)'};border-radius:12px;overflow:hidden;box-shadow:${isRecommended ? '0 0 0 1px rgba(249,115,22,0.16)' : 'none'};">
+        <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;padding:12px 18px;border-bottom:1px solid var(--border);">
+          <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+            <span class="${tierClass(cfg.tier)}" style="font-size:11px;font-weight:800;letter-spacing:0.4px;padding:4px 10px;border-radius:6px;">${cfg.tier} Option</span>
+            ${isRecommended ? `<span style="font-size:10px;font-weight:800;color:var(--orange);background:rgba(249,115,22,0.10);border:1px solid rgba(249,115,22,0.28);border-radius:5px;padding:3px 7px;">RECOMMENDED</span>` : ''}
+          </div>
+          <span style="font-size:11px;color:var(--muted);white-space:nowrap;">OI ${cfg.tierP.oiLo} - ${cfg.tierP.oiHi}</span>
+        </div>
+        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));border-bottom:1px solid var(--border);">
+          ${top.map(([label, value, c], i) => `
+            <div style="padding:14px 18px;${i < top.length - 1 ? 'border-right:1px solid var(--border);' : ''}">
+              <div style="font-size:10px;color:var(--muted);font-weight:700;letter-spacing:0.45px;margin-bottom:5px;">${label}</div>
+              <div class="mono" style="font-size:${label === 'mmFactor' ? '13px' : '20px'};font-weight:800;color:${c};word-break:break-all;line-height:1.25;">${esc(value)}</div>
+            </div>`).join('')}
+        </div>
+        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));">
+          ${rows.map(([label, value, hint], i) => `
+            <div style="padding:14px 18px;border-top:${i < 3 ? '0' : '1px solid var(--border)'};${(i + 1) % 3 ? 'border-right:1px solid var(--border);' : ''}">
+              <div style="font-size:10px;color:var(--muted);font-weight:700;letter-spacing:0.45px;margin-bottom:5px;">${label}</div>
+              <div class="mono" style="font-size:17px;font-weight:800;color:var(--text);word-break:break-all;line-height:1.25;">${esc(value)}</div>
+              <div style="font-size:10px;color:var(--muted);margin-top:4px;">${esc(hint)}</div>
+            </div>`).join('')}
+        </div>
+      </div>`;
+  };
+
+  return `
+    <div style="margin-bottom:20px;">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:14px;flex-wrap:wrap;">
+        <svg width="16" height="16" fill="none" stroke="var(--orange)" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/></svg>
+        <h2 style="font-size:14px;font-weight:700;color:var(--text);margin:0;">SUGGESTED LISTING CONFIGURATION</h2>
+        ${configs.length > 1 ? `<span style="font-size:11px;color:var(--yellow);">Score is within 10% of a tier boundary; showing ${configs.length} options</span>` : ''}
+      </div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,400px),1fr));gap:12px;">
+        ${configs.map(renderOption).join('')}
+      </div>
+    </div>`;
+}
+
+// ─── RENDER: detail ───────────────────────────────────────────────────────────
+function renderDetail(r) {
+  openMetric = null;
+  const panel = document.getElementById('detail-panel');
+  const color = avatarColor(r.symbol);
+  const sc    = scoreColor(r.totalScore);
+
+  let html = '';
+
+  // Header
+  const avatar = r.thumb
+    ? `<img src="${r.thumb}" style="width:52px;height:52px;border-radius:14px;object-fit:cover;border:1.5px solid ${color}50;" onerror="this.style.display='none'" />`
+    : `<div style="width:52px;height:52px;border-radius:14px;background:${color}20;border:1.5px solid ${color}50;display:flex;align-items:center;justify-content:center;font-weight:800;font-size:20px;color:${color};">${r.symbol[0]}</div>`;
+
+  const tierLabel = r.finalTier + (r.whitelistCap ? ' [whitelist cap]' : '') + (r.ageCapped ? ' [age cap]' : '');
+  html += `
+    <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:24px;flex-wrap:wrap;margin-bottom:28px;">
+      <div style="display:flex;align-items:center;gap:16px;">
+        ${avatar}
+        <div>
+          <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+            <h1 style="font-size:22px;font-weight:800;color:var(--text);margin:0;letter-spacing:-0.5px;">${r.name}</h1>
+            <span style="font-size:14px;font-weight:600;color:var(--muted);">${r.symbol}</span>
+            <span class="${tierClass(r.finalTier)}" style="font-size:11px;font-weight:700;letter-spacing:0.5px;padding:4px 10px;border-radius:6px;">${tierLabel}</span>
+            ${r.allPass
+              ? `<span style="background:rgba(34,197,94,0.08);border:1px solid rgba(34,197,94,0.25);color:var(--green);font-size:11px;font-weight:700;padding:4px 10px;border-radius:6px;">ELIGIBLE</span>`
+              : `<span style="background:rgba(239,68,68,0.10);border:1px solid rgba(239,68,68,0.25);color:var(--red);font-size:11px;font-weight:700;padding:4px 10px;border-radius:6px;">NOT ELIGIBLE</span>`
+            }
+          </div>
+          <div style="font-size:12px;color:var(--muted);margin-top:4px;">Rank #${r.rank || '—'} &bull; Data: CoinGecko + Hyperliquid</div>
+        </div>
+      </div>
+      <div style="display:flex;gap:12px;flex-wrap:wrap;">
+        ${renderRefreshButton(false)}
+        ${[['PRICE', fmtPrice(r.price)], ['FDMC', fmtBig(r.fdmc)], ['MCAP', fmtBig(r.mcap)]].map(([l, v]) => `
+          <div style="background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:12px 18px;text-align:right;">
+            <div style="font-size:11px;color:var(--muted);margin-bottom:2px;font-weight:500;">${l}</div>
+            <div class="mono" style="font-size:18px;font-weight:700;color:var(--text);">${v}</div>
+          </div>`).join('')}
+      </div>
+    </div>
+  `;
+
+  // Gates
+  html += `
+    <div style="margin-bottom:24px;">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:14px;">
+        <svg width="16" height="16" fill="none" stroke="var(--orange)" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4M7.835 4.697a3.42 3.42 0 001.946-.806 3.42 3.42 0 014.438 0 3.42 3.42 0 001.946.806 3.42 3.42 0 013.138 3.138 3.42 3.42 0 00.806 1.946 3.42 3.42 0 010 4.438 3.42 3.42 0 00-.806 1.946 3.42 3.42 0 01-3.138 3.138 3.42 3.42 0 00-1.946.806 3.42 3.42 0 01-4.438 0 3.42 3.42 0 00-1.946-.806 3.42 3.42 0 01-3.138-3.138 3.42 3.42 0 00-.806-1.946 3.42 3.42 0 010-4.438 3.42 3.42 0 00.806-1.946 3.42 3.42 0 013.138-3.138z"/></svg>
+        <h2 style="font-size:14px;font-weight:700;color:var(--text);margin:0;">LISTING GATES</h2>
+        <span style="font-size:11px;color:var(--muted);">All must pass</span>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
+        ${Object.entries(r.gates).filter(([key]) => ACTIVE_GATE_KEYS.includes(key)).map(([key, g]) => `
+          <div class="gate-card">
+            <div style="display:flex;align-items:center;justify-content:space-between;">
+              <div style="display:flex;align-items:center;gap:8px;color:var(--muted);">
+                ${gateIcon(key)}<span style="font-size:12px;font-weight:600;">${gateLabel(key)}</span>
+              </div>
+              <span style="font-size:11px;font-weight:700;padding:3px 9px;border-radius:5px;letter-spacing:0.5px;
+                ${g.pass
+                  ? (g.cond
+                    ? 'background:rgba(245,158,11,0.12);color:var(--yellow);border:1px solid rgba(245,158,11,0.3);'
+                    : 'background:rgba(34,197,94,0.12);color:var(--green);border:1px solid rgba(34,197,94,0.25);')
+                  : 'background:rgba(239,68,68,0.12);color:var(--red);border:1px solid rgba(239,68,68,0.25);'}">
+                ${g.pass ? (g.cond ? 'COND' : 'PASS') : 'FAIL'}
+              </span>
+            </div>
+            <div style="font-size:12px;color:${g.pass ? 'var(--muted)' : 'var(--red)'};margin-top:2px;">${g.value}</div>
+          </div>`).join('')}
+      </div>
+    </div>
+  `;
+
+  if (!r.allPass) {
+    const failed = Object.entries(r.gates).filter(([key, g]) => ACTIVE_GATE_KEYS.includes(key) && !g.pass).map(([k]) => gateLabel(k));
+    html += `
+      <div style="background:rgba(239,68,68,0.06);border:1px solid rgba(239,68,68,0.2);border-radius:12px;padding:28px 24px;text-align:center;margin-bottom:24px;">
+        <svg style="margin:0 auto 14px;display:block;color:var(--red);" width="36" height="36" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M18.364 18.364A9 9 0 005.636 5.636m12.728 12.728A9 9 0 015.636 5.636m12.728 12.728L5.636 5.636"/>
+        </svg>
+        <h3 style="font-size:18px;font-weight:700;color:var(--red);margin:0 0 8px;">Not Eligible for Listing</h3>
+        <p style="font-size:13px;color:var(--muted);margin:0 0 16px;">Failed mandatory gate(s). Must resolve before scoring proceeds.</p>
+        <div style="display:flex;gap:8px;justify-content:center;flex-wrap:wrap;">
+          ${failed.map(g => `<span style="background:rgba(239,68,68,0.1);border:1px solid rgba(239,68,68,0.25);color:var(--red);font-size:12px;font-weight:600;padding:5px 12px;border-radius:6px;">${g} FAILED</span>`).join('')}
+        </div>
+      </div>
+      <div id="exchange-ref-section">${renderExchangeReferenceSection(r.symbol)}</div>
+      ${renderExchangeSection(r)}
+    `;
+  } else {
+    // Score ring
+    const pct = r.totalScore;
+    html += `
+      <div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:22px 24px;margin-bottom:20px;">
+        <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:16px;">
+          <div style="display:flex;align-items:center;gap:20px;">
+            <div style="position:relative;width:72px;height:72px;flex-shrink:0;">
+              <svg width="72" height="72" viewBox="0 0 72 72">
+                <circle cx="36" cy="36" r="30" fill="none" stroke="var(--border)" stroke-width="6"/>
+                <circle cx="36" cy="36" r="30" fill="none" stroke="${sc}" stroke-width="6"
+                  stroke-dasharray="${2 * Math.PI * 30}"
+                  stroke-dashoffset="${2 * Math.PI * 30 * (1 - pct / 100)}"
+                  stroke-linecap="round" transform="rotate(-90 36 36)"
+                  style="transition:stroke-dashoffset 0.8s cubic-bezier(0.4,0,0.2,1);"/>
+              </svg>
+              <div style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-size:16px;font-weight:800;color:${sc};">${r.totalScore}</div>
+            </div>
+            <div>
+              <div style="display:flex;align-items:center;gap:7px;margin-bottom:4px;">
+                <div style="font-size:12px;color:var(--muted);font-weight:500;">LISTING SCORE</div>
+                <span class="info-wrap">
+                  <button class="info-trigger" aria-label="Tiering rules">
+                    <svg width="11" height="11" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.3" d="M13 16h-1v-4h-1m1-4h.01M12 21a9 9 0 100-18 9 9 0 000 18z"/></svg>
+                  </button>
+                  <span class="info-popover">
+                    <span style="display:block;font-size:10px;font-weight:800;color:var(--orange);letter-spacing:0.6px;margin-bottom:8px;">TIERING</span>
+                    <span style="display:block;font-size:11px;color:var(--muted);line-height:1.55;">Score maps to raw tier: ${esc(tierRuleText())}</span>
+                    <span style="display:block;font-size:11px;color:var(--muted);line-height:1.55;margin-top:6px;">Final tier applies hard gates first, then feed ceiling, BTC/ETH-only Prime cap, and age cap for markets under ${CFG.AGE_MIN_DAYS}d.</span>
+                  </span>
+                </span>
+              </div>
+              <div class="mono" style="font-size:24px;font-weight:800;color:${sc};letter-spacing:-0.5px;">${r.totalScore} <span style="font-size:14px;color:var(--muted);font-weight:500;">/ 100</span></div>
+              <div style="margin-top:8px;background:var(--elevated);border-radius:4px;height:6px;width:200px;overflow:hidden;">
+                <div style="height:100%;width:${pct}%;background:${sc};border-radius:4px;transition:width 0.8s cubic-bezier(0.4,0,0.2,1);"></div>
+              </div>
+            </div>
+          </div>
+          <div style="display:flex;gap:12px;flex-wrap:wrap;">
+            <div style="background:var(--elevated);border:1px solid var(--border);border-radius:10px;padding:12px 16px;text-align:center;">
+              <div style="font-size:10px;color:var(--muted);font-weight:600;letter-spacing:0.5px;margin-bottom:4px;">RAW TIER</div>
+              <span class="${tierClass(r.rawTier)}" style="font-size:13px;font-weight:700;padding:4px 10px;border-radius:6px;">${r.rawTier}</span>
+            </div>
+            <div style="background:var(--elevated);border:1px solid var(--border);border-radius:10px;padding:12px 16px;text-align:center;">
+              <div style="font-size:10px;color:var(--muted);font-weight:600;letter-spacing:0.5px;margin-bottom:4px;">FINAL TIER</div>
+              <span class="${tierClass(r.finalTier)}" style="font-size:13px;font-weight:700;padding:4px 10px;border-radius:6px;">${r.finalTier}</span>
+            </div>
+            <div style="background:var(--elevated);border:1px solid var(--border);border-radius:10px;padding:12px 16px;text-align:center;">
+              <div style="font-size:10px;color:var(--muted);font-weight:600;letter-spacing:0.5px;margin-bottom:4px;">MAX LEVERAGE</div>
+              <div class="mono" style="font-size:20px;font-weight:800;color:${sc};">${r.tierP.maxLev}<span style="font-size:13px;color:var(--muted);">×</span></div>
+            </div>
+          </div>
+        </div>
+        ${(r.ageCapped || r.whitelistCap) ? `
+          <div style="margin-top:14px;padding-top:14px;border-top:1px solid var(--border);display:flex;gap:8px;flex-wrap:wrap;">
+            ${r.ageCapped ? `<span style="background:rgba(245,158,11,0.1);border:1px solid rgba(245,158,11,0.25);color:var(--yellow);font-size:11px;font-weight:600;padding:4px 10px;border-radius:5px;">⚠ Age cap: ${r.ageDays}d < ${CFG.AGE_MIN_DAYS}d minimum → Micro-Cap ceiling</span>` : ''}
+            ${r.whitelistCap ? `<span style="background:rgba(96,165,250,0.1);border:1px solid rgba(96,165,250,0.25);color:#60a5fa;font-size:11px;font-weight:600;padding:4px 10px;border-radius:5px;">ℹ Whitelist cap: Prime → Major (BTC/ETH only)</span>` : ''}
+          </div>` : ''}
+      </div>
+    `;
+
+    // Metric breakdown
+    html += `
+      <div style="margin-bottom:20px;">
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:14px;">
+          <svg width="16" height="16" fill="none" stroke="var(--orange)" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"/></svg>
+          <h2 style="font-size:14px;font-weight:700;color:var(--text);margin:0;">METRIC BREAKDOWN</h2>
+          <span style="font-size:11px;color:var(--muted);">Click row for details</span>
+        </div>
+        <div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;overflow:hidden;">
+          <div style="display:grid;grid-template-columns:1fr 180px 90px 90px;padding:10px 16px;border-bottom:1px solid var(--border);">
+            ${['METRIC','SCORE / WEIGHT','SUB-SCORE','RAW VALUE'].map((h,i) => `<div style="font-size:11px;font-weight:600;color:var(--muted);letter-spacing:0.5px;${i>1?'text-align:right;':''}">${h}</div>`).join('')}
+          </div>
+          ${Object.entries(r.metrics).map(([key, m]) => {
+            const pct = Math.round((m.score / m.w) * 100);
+            const bc  = pct >= 80 ? '#22c55e' : pct >= 50 ? '#f59e0b' : '#ef4444';
+            const d   = m.detail;
+            const isO = openMetric === key;
+            return `
+              <div>
+                <div class="metric-row" onclick="toggleMetric('${key}')"
+                  style="display:grid;grid-template-columns:1fr 180px 90px 90px;padding:12px 16px;border-bottom:1px solid var(--border);align-items:center;transition:background 0.15s;">
+                  <div style="display:flex;align-items:center;gap:8px;">
+                    <svg style="color:${isO ? 'var(--orange)' : 'var(--muted)'};flex-shrink:0;transform:rotate(${isO ? 90 : 0}deg);transition:transform 0.2s;" width="12" height="12" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M9 5l7 7-7 7"/>
+                    </svg>
+                    <div>
+                      <div style="font-size:13px;font-weight:600;color:var(--text);">${m.label}</div>
+                      <div style="font-size:11px;color:var(--muted);">${d.hiB ? '↑ higher is better' : '↓ lower is better'}${m.flag ? ' · <span style="color:var(--yellow);">⚠ '+m.flag+'</span>' : ''}</div>
+                    </div>
+                  </div>
+                  <div style="padding-right:16px;">
+                    <div style="display:flex;justify-content:space-between;margin-bottom:5px;">
+                      <span style="font-size:10px;color:var(--muted);">${m.score.toFixed(1)}/${m.w} pts</span>
+                      <span style="font-size:10px;color:${bc};font-weight:600;">${pct}%</span>
+                    </div>
+                    <div style="background:var(--elevated);border-radius:3px;height:5px;overflow:hidden;">
+                      <div style="height:100%;width:${pct}%;background:${bc};border-radius:3px;"></div>
+                    </div>
+                  </div>
+                  <div class="mono" style="text-align:right;font-size:14px;font-weight:700;color:${bc};">${m.score.toFixed(1)}<span style="font-size:11px;color:var(--muted);font-weight:400;">/${m.w}</span></div>
+                  <div class="mono" style="text-align:right;font-size:12px;font-weight:600;color:var(--text);">${m.rawFmt}</div>
+                </div>
+                <div class="accordion-content ${isO ? 'open' : ''}" id="acc-${key}">
+                  <div style="padding:16px 20px;background:#0e1016;border-bottom:1px solid var(--border);">
+                    <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:16px;">
+                      ${[['WHAT',d.what],['WHY IT MATTERS',d.why],['FORMULA',d.formula]].map(([t,v],i) => `
+                        <div>
+                          <div style="font-size:10px;font-weight:700;color:var(--orange);letter-spacing:0.8px;margin-bottom:6px;">${t}</div>
+                          ${i===2
+                            ? `<div class="mono" style="font-size:11px;color:#a5b4fc;background:rgba(99,102,241,0.08);border:1px solid rgba(99,102,241,0.2);border-radius:6px;padding:8px 10px;line-height:1.6;">${v}</div>`
+                            : `<p style="font-size:12px;color:var(--muted);margin:0;line-height:1.5;">${v}</p>`
+                          }
+                        </div>`).join('')}
+                    </div>
+                  </div>
+                </div>
+              </div>`;
+          }).join('')}
+          <div style="display:grid;grid-template-columns:1fr 180px 90px 90px;padding:12px 16px;background:rgba(249,115,22,0.05);">
+            <div style="font-size:13px;font-weight:700;color:var(--text);">Total Score</div>
+            <div></div>
+            <div class="mono" style="text-align:right;font-size:14px;font-weight:800;color:${sc};">${r.totalScore}<span style="font-size:11px;color:var(--muted);font-weight:400;">/100</span></div>
+            <div></div>
+          </div>
+        </div>
+      </div>
+    `;
+
+    html += renderSuggestedListingConfig(r, sc);
+
+    html += `<div id="exchange-ref-section">${renderExchangeReferenceSection(r.symbol)}</div>`;
+    html += renderExchangeSection(r);
+  }
+
+  panel.innerHTML = html;
+}
+
+function renderExchangeReferenceSection(symbol) {
+  const sym = refSymbol(symbol);
+  const st = exchangeRefCache.get(sym) || emptyExchangeRefState(sym);
+  const order = [
+    ['binance', 'Binance'],
+    ['hyperliquid', 'Hyperliquid'],
+    ['aster', 'Aster'],
+    ['lighter', 'Lighter'],
+  ];
+  const updatedText = st.updatedAt
+    ? `Updated ${new Date(st.updatedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`
+    : 'Fetching live settings';
+
+  const card = ([key, label]) => {
+    const ref = st.refs[key] || { status: 'loading' };
+    if (ref.status === 'loading') {
+      return `
+        <div style="background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:14px 16px;min-height:138px;">
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;">
+            <div style="font-size:12px;font-weight:800;color:var(--text);">${label}</div>
+            <span class="spinner-sm"></span>
+          </div>
+          <div style="font-size:12px;color:var(--muted);">Fetching current perp settings...</div>
+        </div>`;
+    }
+
+    if (ref.status === 'error') {
+      return `
+        <div style="background:var(--surface);border:1px solid rgba(239,68,68,0.25);border-radius:10px;padding:14px 16px;min-height:138px;">
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;">
+            <div style="font-size:12px;font-weight:800;color:var(--text);">${label}</div>
+            <span style="font-size:10px;font-weight:800;padding:3px 7px;border-radius:5px;background:rgba(239,68,68,0.12);color:var(--red);border:1px solid rgba(239,68,68,0.25);">ERR</span>
+          </div>
+          <div style="font-size:12px;color:var(--red);line-height:1.45;">${esc(ref.error || 'Unavailable')}</div>
+        </div>`;
+    }
+
+    const d = ref.data || {};
+    if (!d.listed) {
+      return '';
+    }
+
+    const statusLabel = exchangeStatusLabel(d.status);
+    const statusColor = statusLabel.includes('ISOLATED') ? 'var(--yellow)' : 'var(--green)';
+    const cells = [
+      ['MAX LEV', d.maxLev ? d.maxLev + 'x' : '—'],
+      ['STEP SIZE', fmtDecimal(d.stepSize)],
+      ['STEP PRICE', fmtDecimal(d.stepPrice)],
+      ['IMR', marginPct(d.imr)],
+      ['MMR', marginPct(d.mmr)],
+      ['CMR', marginPct(d.cmr)],
+      ['LIMIT', d.limit || '—'],
+    ];
+
+    return `
+      <div style="background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:14px 16px;min-height:172px;">
+        <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:12px;">
+          <div style="min-width:0;">
+            <div style="font-size:12px;font-weight:800;color:var(--text);">${label}</div>
+            <div style="font-size:10px;color:var(--muted);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${esc(d.market || sym)} perp</div>
+          </div>
+          <span style="font-size:10px;font-weight:800;padding:3px 7px;border-radius:5px;background:rgba(34,197,94,0.10);color:${statusColor};border:1px solid rgba(34,197,94,0.22);">${esc(statusLabel)}</span>
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px 12px;">
+          ${cells.map(([k, v]) => `
+            <div>
+              <div style="font-size:9px;color:var(--muted);font-weight:700;letter-spacing:0.45px;margin-bottom:2px;">${k}</div>
+              <div class="mono" style="font-size:13px;font-weight:800;color:${k === 'MAX LEV' ? 'var(--orange)' : 'var(--text)'};word-break:break-all;">${esc(v)}</div>
+            </div>`).join('')}
+        </div>
+      </div>`;
+  };
+
+  return `
+    <div style="margin-bottom:20px;">
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:14px;">
+        <div style="display:flex;align-items:center;gap:8px;">
+          <svg width="16" height="16" fill="none" stroke="var(--orange)" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 7h18M5 7v12m14-12v12M8 11h2m4 0h2M8 15h2m4 0h2M4 19h20"/></svg>
+          <h2 style="font-size:14px;font-weight:700;color:var(--text);margin:0;">REFERENCED EXCHANGE SETTINGS</h2>
+          <span style="font-size:11px;color:var(--muted);">${updatedText}</span>
+        </div>
+        <button class="icon-btn" onclick="loadExchangeReferences('${sym}', true)" ${st.status === 'loading' ? 'disabled' : ''}
+          title="${st.status === 'loading' ? 'Refreshing references' : 'Refresh exchange references'}"
+          aria-label="${st.status === 'loading' ? 'Refreshing references' : 'Refresh exchange references'}">
+          ${st.status === 'loading'
+            ? '<span class="spinner-sm"></span>'
+            : '<svg width="16" height="16" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a9 9 0 00-15.74-5.74L3 8"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 3v5h5"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 12a9 9 0 0015.74 5.74L21 16"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M16 16h5v5"/></svg>'}
+        </button>
+      </div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:10px;">
+        ${order.map(card).filter(Boolean).join('') || `<div style="font-size:12px;color:var(--muted);">No referenced exchange settings available for ${esc(sym)}.</div>`}
+      </div>
+    </div>`;
+}
+
+function renderExchangeSection(r) {
+  if (!r.exchanges || !r.exchanges.length) return '';
+  return `
+    <div style="margin-bottom:8px;">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:12px;">
+        <svg width="16" height="16" fill="none" stroke="var(--orange)" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a9 9 0 01-9 9m9-9a9 9 0 00-9-9m9 9H3m9 9a9 9 0 01-9-9m9 9c1.657 0 3-4.03 3-9s-1.343-9-3-9m0 18c-1.657 0-3-4.03-3-9s1.343-9 3-9m-9 9a9 9 0 019-9"/></svg>
+        <h2 style="font-size:14px;font-weight:700;color:var(--text);margin:0;">EXCHANGE PRESENCE</h2>
+        <span style="font-size:11px;color:var(--muted);">Tier-1/2 only</span>
+      </div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;">
+        ${r.exchanges.map(ex => `<span class="exchange-badge ${CFG.TIER1.has(ex) ? 't1' : 't2'}">${ex}${CFG.TIER1.has(ex) ? ' T1' : ' T2'}</span>`).join('')}
+      </div>
+    </div>
+  `;
+}
+
+// ─── INTERACTION ──────────────────────────────────────────────────────────────
+let _lastSelectedCgId = null;
+let _lastSelectedSymbol = null;
+let _lastSelectedSafety = null;
+let _lastSelectedFeed = null;
+let _lastSelectedCmcId = null;
+let _activeAnalysisRun = 0;
+let _activeAnalysisCgId = null;
+
+function retrySelected() {
+  if (!_lastSelectedCgId || _activeAnalysisCgId === _lastSelectedCgId) return;
+  resultCache.delete(_lastSelectedCgId);
+  if (_lastSelectedSymbol) loadExchangeReferences(_lastSelectedSymbol, true);
+  selectToken(_lastSelectedCgId, _lastSelectedSymbol, _lastSelectedSafety, _lastSelectedFeed, _lastSelectedCmcId);
+}
+
+async function selectToken(cgId, symbol, safetyScore, feedGrade, cmcId = null) {
+  const runId = ++_activeAnalysisRun;
+  _activeAnalysisCgId = cgId;
+  _lastSelectedCgId = cgId;
+  _lastSelectedSymbol = symbol;
+  _lastSelectedSafety = safetyScore;
+  _lastSelectedFeed = feedGrade;
+  _lastSelectedCmcId = cmcId || CMC_IDS_BY_SYMBOL[symbol] || null;
+  selectedCgId = cgId;
+  openMetric = null;
+  renderTokenList();
+  loadExchangeReferences(symbol);
+
+  const panel = document.getElementById('detail-panel');
+  panel.classList.add('fade-out');
+  await new Promise(r => setTimeout(r, 150));
+  if (runId !== _activeAnalysisRun || selectedCgId !== cgId) return;
+  panel.classList.remove('fade-out');
+
+  // Cached result: render immediately with no loading states
+  if (resultCache.has(cgId)) {
+    if (runId === _activeAnalysisRun) _activeAnalysisCgId = null;
+    renderDetail(resultCache.get(cgId));
+    return;
+  }
+
+  renderLoading('Fetching market data…');
+  try {
+    // Progressive: shows header after first fetch, then gates/metrics as each
+    // API call resolves. renderDetail is called at the end with the full result.
+    const result = await analyzeTokenProg(cgId, symbol, safetyScore, feedGrade, _lastSelectedCmcId);
+    if (runId !== _activeAnalysisRun || selectedCgId !== cgId) return;
+    _activeAnalysisCgId = null;
+    if (result) {
+      renderDetail(result);
+      renderTokenList(); // refresh scores in left panel
+    }
+  } catch (err) {
+    if (runId !== _activeAnalysisRun || selectedCgId !== cgId) return;
+    _activeAnalysisCgId = null;
+    renderError(err, symbol);
+  }
+}
+
+function toggleMetric(key) {
+  openMetric = openMetric === key ? null : key;
+  // Close all, open the selected one
+  document.querySelectorAll('.accordion-content').forEach(el => el.classList.remove('open'));
+  if (openMetric) {
+    const el = document.getElementById('acc-' + openMetric);
+    if (el) el.classList.add('open');
+  }
+  // Update chevrons — onclick is on the .metric-row element itself
+  document.querySelectorAll('.metric-row').forEach(row => {
+    const onclick = row.getAttribute('onclick') || '';
+    const match = onclick.match(/'([^']+)'/);
+    const k = match ? match[1] : null;
+    if (!k) return;
+    const svg = row.querySelector('svg');
+    if (!svg) return;
+    const isO = openMetric === k;
+    svg.style.transform = `rotate(${isO ? 90 : 0}deg)`;
+    svg.style.color = isO ? 'var(--orange)' : 'var(--muted)';
+  });
+}
+
+// ─── TOP COINS ────────────────────────────────────────────────────────────────
+// Fetches top-50 by market cap, strips stables/wrapped tokens, keeps top 20.
+// Falls back to KNOWN list on any network or parse error.
+async function loadTopCoins() {
+  try {
+    const coins = await cgGet('/coins/markets?vs_currency=usd&order=market_cap_desc&per_page=50&page=1&sparkline=false');
+    if (!Array.isArray(coins)) return;
+    const filtered = coins.filter(c => c.id && c.symbol && !isExcluded(c)).slice(0, 20);
+    if (!filtered.length) return;
+    tokenList = filtered.map(c => {
+      const sym = c.symbol.toUpperCase();
+      const known = KNOWN[sym];
+      return {
+        symbol: sym,
+        cgId:   c.id,
+        cmcId:  known?.cmcId || CMC_IDS_BY_SYMBOL[sym],
+        name:   c.name  || sym,
+        rank:   c.market_cap_rank || null,
+        thumb:  c.image || null,
+        safetyScore: known?.safetyScore ?? 75,
+        feedGrade:   known?.feedGrade   ?? 'A',
+      };
+    });
+    renderTokenList();
+  } catch (e) {
+    // Keep the KNOWN list on failure; user can still search any token.
+  }
+}
+
+// ─── INIT ─────────────────────────────────────────────────────────────────────
+(function init() {
+  loadSettings();
+  updateSyncStamp();
+
+  // Show users which live data paths the static page is using.
+  {
+    const notice = document.createElement('div');
+    notice.style.cssText = 'background:rgba(148,163,184,0.05);border-bottom:1px solid var(--border);padding:5px 24px;font-size:11px;color:var(--muted);display:flex;align-items:center;gap:8px;flex-shrink:0;position:relative;z-index:1;';
+    notice.innerHTML = `<svg width="11" height="11" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>CoinGecko direct API with proxy fallback · RISEx/Lighter/Binance references with fallback · Hyperliquid direct${_IS_FILE ? ' (skipped on file://)' : ''}`;
+    document.querySelector('#main-content').before(notice);
+  }
+
+  renderTokenList();
+  renderWelcome();
+  refreshSideRail();
+  loadRiseMarkets();
+  loadTrendingTokens();
+  loadTopCoins();
+  scheduleAutoRefresh();
+})();
+</script>
+
+</body>
+</html>
