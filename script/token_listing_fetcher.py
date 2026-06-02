@@ -24,6 +24,7 @@ CMC_DETAIL_URL        = "https://api.coinmarketcap.com/data-api/v3/cryptocurrenc
 CMC_HISTORICAL_URL    = "https://api.coinmarketcap.com/data-api/v3.1/cryptocurrency/historical"
 CMC_MARKET_PAIRS_URL  = "https://api.coinmarketcap.com/data-api/v3/cryptocurrency/market-pairs/latest"
 COINGECKO_TICKERS_URL = "https://api.coingecko.com/api/v3/coins/{coingecko_id}/tickers"
+HYPERLIQUID_INFO_URL  = "https://api.hyperliquid.xyz/info"
 
 # Resolved relative to cwd at call time; notebooks run from their own directory.
 CACHE_DIR = Path("cache")
@@ -209,6 +210,53 @@ def fetch_cmc_market_pairs(cmc_slug: str, symbol: str, session: requests.Session
     return data
 
 
+def fetch_hyperliquid_depth(symbol: str, session: requests.Session,
+                            refresh: bool = False) -> dict:
+    """
+    Fetch ±2% spot depth from Hyperliquid's own L2 book API.
+
+    Used as the authoritative depth source for the "hyperliquid" exchange slug:
+    both CMC and CoinGecko misreport Hyperliquid on-chain book depth by 100x or more.
+
+    Hyperliquid L2Book: levels[0] = bids (descending), levels[1] = asks (ascending).
+    Mid is derived from best bid/ask; 2% depth is summed within [mid*0.98, mid*1.02].
+
+    Returns {"depth_bid": float, "depth_ask": float} or {} if the coin has no
+    Hyperliquid spot market or the request fails.
+    """
+    if not refresh:
+        cached = _load_cache(symbol, "hl_depth")
+        if cached is not None:
+            return cached
+    try:
+        resp = session.post(
+            HYPERLIQUID_INFO_URL,
+            # nSigFigs=3: bucket ≈ 0.1% of price; 20 levels × 0.1% = 2% per side,
+            # enough to cover the full ±2% depth range at any asset price.
+            json={"type": "l2Book", "coin": symbol, "nSigFigs": 3},
+            timeout=10,
+        )
+        resp.raise_for_status()
+        levels = resp.json().get("levels", [])
+        if len(levels) < 2 or not levels[0] or not levels[1]:
+            _save_cache({}, symbol, "hl_depth")
+            return {}
+        bid_levels, ask_levels = levels[0], levels[1]
+        best_bid = float(bid_levels[0]["px"])
+        best_ask = float(ask_levels[0]["px"])
+        mid = (best_bid + best_ask) / 2
+        lo, hi = mid * 0.98, mid * 1.02
+        bid_usd = sum(float(l["px"]) * float(l["sz"]) for l in bid_levels if float(l["px"]) >= lo)
+        ask_usd = sum(float(l["px"]) * float(l["sz"]) for l in ask_levels if float(l["px"]) <= hi)
+        result = {"depth_bid": bid_usd, "depth_ask": ask_usd}
+        _save_cache(result, symbol, "hl_depth")
+        return result
+    except Exception as exc:
+        warnings.warn(f"{symbol}: Hyperliquid depth fetch failed ({exc}); HL depth skipped")
+        _save_cache({}, symbol, "hl_depth")
+        return {}
+
+
 def fetch_coingecko_tickers(coingecko_id: str, symbol: str, session: requests.Session,
                              refresh: bool = False) -> dict:
     """
@@ -226,7 +274,7 @@ def fetch_coingecko_tickers(coingecko_id: str, symbol: str, session: requests.Se
         try:
             resp = session.get(url, timeout=30)
             if resp.status_code == 429:
-                wait = 8 * (2 ** attempt)
+                wait = 60 * (2 ** attempt)
                 warnings.warn(f"{symbol}: CoinGecko 429, retrying in {wait}s (attempt {attempt+1}/5)")
                 time.sleep(wait)
                 continue
@@ -238,7 +286,7 @@ def fetch_coingecko_tickers(coingecko_id: str, symbol: str, session: requests.Se
             if attempt == 4:
                 warnings.warn(f"{symbol}: CoinGecko fetch failed ({exc}); spread will score 0")
                 return {}
-            time.sleep(8 * (2 ** attempt))
+            time.sleep(60 * (2 ** attempt))
     return {}
 
 
@@ -277,11 +325,13 @@ def fetch_all(token: dict, refresh: bool = False) -> dict[str, Any]:
     cg_cached = not refresh and _cache_path(sym, "coingecko_tickers").exists()
     if not cg_cached:
         time.sleep(4)
-    tickers = fetch_coingecko_tickers(coingecko_id, sym, session, refresh)
+    tickers  = fetch_coingecko_tickers(coingecko_id, sym, session, refresh)
+    hl_depth = fetch_hyperliquid_depth(sym, session, refresh)
 
     return {
         "cmc_detail":        detail,
         "cmc_historical":    historical,
         "cmc_market_pairs":  market_pairs,
         "coingecko_tickers": tickers,
+        "hl_depth":          hl_depth,
     }
