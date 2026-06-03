@@ -162,6 +162,75 @@
       cursor: wait;
       opacity: 0.55;
     }
+    .detail-header {
+      display: grid;
+      grid-template-columns: 52px minmax(0, 1fr) auto;
+      gap: 12px 16px;
+      align-items: start;
+      margin-bottom: 28px;
+    }
+    .detail-avatar {
+      grid-row: 1 / span 2;
+    }
+    .detail-identity {
+      min-width: 0;
+      padding-top: 2px;
+    }
+    .detail-title-line {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex-wrap: wrap;
+      min-width: 0;
+    }
+    .detail-title-line h1 {
+      font-size: 22px;
+      font-weight: 800;
+      color: var(--text);
+      margin: 0;
+      letter-spacing: -0.5px;
+      line-height: 1.1;
+    }
+    .detail-subline {
+      font-size: 12px;
+      color: var(--muted);
+      margin-top: 6px;
+    }
+    .detail-actions {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      justify-content: flex-end;
+      flex-wrap: wrap;
+    }
+    .detail-stats {
+      grid-column: 2 / 4;
+      display: flex;
+      gap: 12px;
+      flex-wrap: wrap;
+      align-items: stretch;
+    }
+    .detail-stat-card {
+      min-width: 124px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 14px 18px;
+      text-align: right;
+    }
+    .detail-stat-label {
+      font-size: 11px;
+      color: var(--muted);
+      margin-bottom: 4px;
+      font-weight: 700;
+      letter-spacing: 0.35px;
+    }
+    .detail-stat-value {
+      font-size: 18px;
+      font-weight: 800;
+      color: var(--text);
+      white-space: nowrap;
+    }
     .info-wrap { position: relative; display: inline-flex; align-items: center; }
     .info-trigger {
       width: 18px; height: 18px; border-radius: 50%;
@@ -302,6 +371,41 @@
       background: var(--orange);
       border-color: var(--orange);
     }
+    .export-actions {
+      display: flex;
+      gap: 6px;
+      align-items: center;
+    }
+    .export-btn {
+      height: 38px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 0 10px;
+      background: var(--surface);
+      color: var(--muted);
+      font-size: 11px;
+      font-weight: 800;
+      letter-spacing: 0.35px;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      transition: color 0.15s ease, border-color 0.15s ease, background 0.15s ease;
+    }
+    .export-btn:hover {
+      color: var(--orange);
+      border-color: rgba(249,115,22,0.45);
+      background: rgba(249,115,22,0.08);
+    }
+    .export-btn:disabled {
+      cursor: not-allowed;
+      opacity: 0.45;
+    }
+    .export-btn:disabled:hover {
+      color: var(--muted);
+      border-color: var(--border);
+      background: var(--surface);
+    }
     .rise-market-grid {
       display: grid;
       grid-template-columns: 22px minmax(86px,118px) 42px minmax(72px,1fr) 58px 68px 76px;
@@ -331,6 +435,9 @@
       #right-panel { flex-direction: column; }
       #detail-panel { width: 100%; }
       #side-rail { width: 100%; flex: none; padding: 0 32px 28px; position: static; }
+      .detail-header { grid-template-columns: 52px minmax(0, 1fr); }
+      .detail-actions { grid-column: 1 / 3; justify-content: flex-start; }
+      .detail-stats { grid-column: 1 / 3; }
     }
 
     @media (max-width: 768px) {
@@ -342,6 +449,7 @@
       }
       #right-panel { height: auto; overflow: visible; flex-direction: column; }
       #side-rail { width: 100%; flex: none; padding: 0 32px 28px; position: static; }
+      .detail-stat-card { flex: 1 1 150px; }
       .settings-grid { grid-template-columns: 1fr; }
     }
   </style>
@@ -2311,6 +2419,321 @@ function computeSuggestedConfig(r, tier = r?.finalTier) {
   };
 }
 
+function reportFileBase(r) {
+  const date = new Date().toISOString().slice(0, 10);
+  const sym = String(r?.symbol || 'token').toLowerCase().replace(/[^a-z0-9]+/g, '-');
+  return `risex-${sym}-listing-report-${date}`;
+}
+
+function mdCell(v) {
+  return String(v ?? '—').replace(/\|/g, '\\|').replace(/\n+/g, ' ').trim() || '—';
+}
+
+function mdTable(headers, rows) {
+  return [
+    `| ${headers.map(mdCell).join(' | ')} |`,
+    `| ${headers.map(() => '---').join(' | ')} |`,
+    ...rows.map(row => `| ${row.map(mdCell).join(' | ')} |`),
+  ].join('\n');
+}
+
+function gateStatusText(g) {
+  if (!g) return '—';
+  if (!g.pass) return 'FAIL';
+  return g.cond ? 'COND' : 'PASS';
+}
+
+function maxLevText(v) {
+  return Number.isFinite(Number(v)) ? `${v}x` : '—';
+}
+
+function exchangeReferenceRows(r) {
+  const sym = refSymbol(r?.symbol);
+  const st = exchangeRefCache.get(sym);
+  const order = [
+    ['binance', 'Binance'],
+    ['hyperliquid', 'Hyperliquid'],
+    ['aster', 'Aster'],
+    ['lighter', 'Lighter'],
+  ];
+  return order.map(([key, label]) => {
+    const ref = st?.refs?.[key] || { status: 'loading' };
+    const d = ref.data || {};
+    if (ref.status === 'error') {
+      return {
+        venue: label, market: '—', status: 'ERR', maxLev: '—', stepSize: '—',
+        stepPrice: '—', imr: '—', mmr: '—', cmr: '—', limit: ref.error || 'Unavailable',
+      };
+    }
+    if (ref.status === 'loading') {
+      return {
+        venue: label, market: '—', status: 'LOADING', maxLev: '—', stepSize: '—',
+        stepPrice: '—', imr: '—', mmr: '—', cmr: '—', limit: 'Fetching live settings',
+      };
+    }
+    if (!d.listed) {
+      return {
+        venue: label, market: 'Not listed', status: 'NOT LISTED', maxLev: '—', stepSize: '—',
+        stepPrice: '—', imr: '—', mmr: '—', cmr: '—', limit: d.note || 'No perp market found',
+      };
+    }
+    return {
+      venue: label,
+      market: `${d.market || sym} perp`,
+      status: exchangeStatusLabel(d.status),
+      maxLev: d.maxLev ? `${d.maxLev}x` : '—',
+      stepSize: fmtDecimal(d.stepSize),
+      stepPrice: fmtDecimal(d.stepPrice),
+      imr: marginPct(d.imr),
+      mmr: marginPct(d.mmr),
+      cmr: marginPct(d.cmr),
+      limit: d.limit || '—',
+    };
+  });
+}
+
+function suggestedConfigRows(r) {
+  return suggestedTierOptions(r)
+    .map(tier => computeSuggestedConfig(r, tier))
+    .filter(Boolean)
+    .map(cfg => ({
+      tier: cfg.tier + (cfg.tier === r.finalTier ? ' (recommended)' : ''),
+      maxLev: `${cfg.maxLev}x`,
+      imr: fmtConfigPct(cfg.imr),
+      mmr: fmtConfigPct(cfg.mmr),
+      mmFactor: fmtFactorExpr(cfg.mmFactor),
+      stepPrice: fmtDecimal(cfg.stepPrice),
+      stepSize: `${fmtDecimal(cfg.stepSize)} (${fmtUsdPrecise(cfg.stepSize * r.price)} per step)`,
+      minOrderStep: `${fmtPlainInt(cfg.minOrderStep)} (${cfg.minOrderUsd ? fmtBig(cfg.minOrderUsd) : '—'})`,
+      oiLimitSteps: `${fmtPlainInt(cfg.oiLimitSteps)} (${cfg.oiLimitUsd ? fmtBig(cfg.oiLimitUsd) : '—'})`,
+      maxOrderStep: fmtPlainInt(cfg.maxOrderStep),
+      priceBand: fmtConfigPct(cfg.priceBand),
+      impactNotional: fmtBig(cfg.impactNotional),
+    }));
+}
+
+function buildMarkdownReport(r) {
+  const generated = new Date().toISOString().replace('T', ' ').replace(/\.\d{3}Z$/, ' UTC');
+  const gateRows = Object.entries(r.gates || {})
+    .filter(([key]) => ACTIVE_GATE_KEYS.includes(key))
+    .map(([key, g]) => [gateLabel(key), gateStatusText(g), g.value]);
+  const metricRows = Object.entries(r.metrics || {}).map(([, m]) => {
+    const pct = m.w ? Math.round((m.score / m.w) * 100) + '%' : '—';
+    return [m.label, `${m.score.toFixed(1)} / ${m.w}`, pct, m.rawFmt, m.flag || '—'];
+  });
+  const metricDetailRows = Object.entries(r.metrics || {}).map(([, m]) => [
+    m.label,
+    m.detail?.hiB ? 'Higher is better' : 'Lower is better',
+    m.detail?.what || '—',
+    m.detail?.formula || '—',
+    m.detail?.why || '—',
+  ]);
+  const configRows = suggestedConfigRows(r);
+  const refRows = exchangeReferenceRows(r);
+
+  const lines = [
+    `# ${r.name} (${r.symbol}) Listing Assessment`,
+    '',
+    `Generated: ${generated}`,
+    '',
+    '## General Info',
+    '',
+    mdTable(['Field', 'Value'], [
+      ['Token', `${r.name} (${r.symbol})`],
+      ['Rank', r.rank ? `#${r.rank}` : '—'],
+      ['Eligibility', r.allPass ? 'Eligible' : 'Not eligible'],
+      ['Price', fmtPrice(r.price)],
+      ['FDMC', fmtBig(r.fdmc)],
+      ['Market Cap', fmtBig(r.mcap)],
+      ['Data Sources', 'CoinGecko + Hyperliquid + exchange references'],
+    ]),
+    '',
+    '## Listing Gate',
+    '',
+    mdTable(['Gate', 'Status', 'Value'], gateRows),
+    '',
+    '## Assessment',
+    '',
+    '### Final Score and Tiering',
+    '',
+    mdTable(['Field', 'Value'], [
+      ['Final Score', `${r.totalScore} / 100`],
+      ['Raw Tier', r.rawTier],
+      ['Final Tier', r.finalTier],
+      ['Max Leverage', maxLevText(r.tierP?.maxLev)],
+      ['Tier Rule', tierRuleText()],
+      ['Age Cap', r.ageCapped ? `${r.ageDays}d < ${CFG.AGE_MIN_DAYS}d minimum` : 'No'],
+      ['Whitelist Cap', r.whitelistCap ? 'Prime capped to Major unless BTC/ETH' : 'No'],
+    ]),
+    '',
+    '### Metric Breakdown',
+    '',
+    mdTable(['Metric', 'Score / Weight', 'Sub-score', 'Raw Value', 'Flag'], metricRows),
+    '',
+    '### Detailed Scoring',
+    '',
+    mdTable(['Metric', 'Direction', 'What', 'Formula', 'Why It Matters'], metricDetailRows),
+    '',
+    '### Suggested Configuration',
+    '',
+    configRows.length
+      ? mdTable(
+          ['Option', 'MaxLeverage', 'IMR', 'MMR', 'mmFactor', 'StepPrice', 'StepSize', 'MinOrderStep', 'OILimitSteps', 'MaxOrderStep', 'PriceBand', 'ImpactNotional'],
+          configRows.map(c => [c.tier, c.maxLev, c.imr, c.mmr, c.mmFactor, c.stepPrice, c.stepSize, c.minOrderStep, c.oiLimitSteps, c.maxOrderStep, c.priceBand, c.impactNotional])
+        )
+      : 'No suggested configuration is generated because the listing gates did not pass.',
+    '',
+    '### Referenced Exchange Settings',
+    '',
+    mdTable(
+      ['Exchange', 'Market', 'Status', 'Max Lev', 'StepSize', 'StepPrice', 'IMR', 'MMR', 'CMR', 'Limit'],
+      refRows.map(x => [x.venue, x.market, x.status, x.maxLev, x.stepSize, x.stepPrice, x.imr, x.mmr, x.cmr, x.limit])
+    ),
+    '',
+  ];
+  return lines.join('\n');
+}
+
+function buildPdfReportHtml(r) {
+  const generated = new Date().toISOString().replace('T', ' ').replace(/\.\d{3}Z$/, ' UTC');
+  const gateRows = Object.entries(r.gates || {})
+    .filter(([key]) => ACTIVE_GATE_KEYS.includes(key))
+    .map(([key, g]) => [gateLabel(key), gateStatusText(g), g.value]);
+  const metricRows = Object.entries(r.metrics || {}).map(([, m]) => [
+    m.label,
+    `${m.score.toFixed(1)} / ${m.w}`,
+    m.w ? Math.round((m.score / m.w) * 100) + '%' : '—',
+    m.rawFmt,
+    m.detail?.hiB ? 'Higher is better' : 'Lower is better',
+    m.flag || '—',
+  ]);
+  const configRows = suggestedConfigRows(r);
+  const refRows = exchangeReferenceRows(r);
+  const table = (headers, rows) => `
+    <table>
+      <thead><tr>${headers.map(h => `<th>${esc(h)}</th>`).join('')}</tr></thead>
+      <tbody>${rows.map(row => `<tr>${row.map(v => `<td>${esc(v)}</td>`).join('')}</tr>`).join('')}</tbody>
+    </table>`;
+  const kv = rows => table(['Field', 'Value'], rows);
+
+  return `<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>${esc(r.symbol)} Listing Assessment</title>
+  <style>
+    @page { size: A4 landscape; margin: 12mm; }
+    body { font-family: Inter, Arial, sans-serif; color: #111827; margin: 0; line-height: 1.42; }
+    h1 { font-size: 24px; margin: 0 0 4px; }
+    h2 { font-size: 15px; margin: 24px 0 8px; padding-bottom: 5px; border-bottom: 1px solid #d1d5db; }
+    h3 { font-size: 13px; margin: 16px 0 8px; color: #374151; }
+    .muted { color: #6b7280; font-size: 11px; }
+    .summary { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin: 16px 0; }
+    .card { border: 1px solid #d1d5db; border-radius: 8px; padding: 9px 10px; }
+    .label { color: #6b7280; font-size: 9px; font-weight: 800; text-transform: uppercase; letter-spacing: 0.5px; }
+    .value { font-size: 16px; font-weight: 800; margin-top: 3px; }
+    table { width: 100%; border-collapse: collapse; margin: 8px 0 12px; table-layout: fixed; }
+    th, td { border: 1px solid #d1d5db; padding: 6px 7px; font-size: 10px; vertical-align: top; word-break: break-word; }
+    th { background: #f3f4f6; color: #374151; text-align: left; font-size: 9px; text-transform: uppercase; letter-spacing: 0.45px; }
+    .section { break-inside: avoid; }
+    .status-pass { color: #047857; font-weight: 800; }
+    .status-fail { color: #dc2626; font-weight: 800; }
+    @media print { button { display: none; } }
+  </style>
+</head>
+<body>
+  <button onclick="window.print()" style="position:fixed;right:16px;top:16px;padding:8px 12px;border:1px solid #d1d5db;border-radius:8px;background:white;cursor:pointer;">Print / Save PDF</button>
+  <h1>${esc(r.name)} (${esc(r.symbol)}) Listing Assessment</h1>
+  <div class="muted">Generated ${esc(generated)} · RISEx Token Listing Screener</div>
+
+  <h2>General Info</h2>
+  <div class="summary">
+    <div class="card"><div class="label">Eligibility</div><div class="value ${r.allPass ? 'status-pass' : 'status-fail'}">${r.allPass ? 'Eligible' : 'Not eligible'}</div></div>
+    <div class="card"><div class="label">Price</div><div class="value">${esc(fmtPrice(r.price))}</div></div>
+    <div class="card"><div class="label">FDMC</div><div class="value">${esc(fmtBig(r.fdmc))}</div></div>
+    <div class="card"><div class="label">Market Cap</div><div class="value">${esc(fmtBig(r.mcap))}</div></div>
+  </div>
+  ${kv([
+    ['Token', `${r.name} (${r.symbol})`],
+    ['Rank', r.rank ? `#${r.rank}` : '—'],
+    ['Data Sources', 'CoinGecko + Hyperliquid + exchange references'],
+  ])}
+
+  <h2>Listing Gate</h2>
+  ${table(['Gate', 'Status', 'Value'], gateRows)}
+
+  <h2>Assessment</h2>
+  <h3>Final Score and Tiering</h3>
+  ${kv([
+    ['Final Score', `${r.totalScore} / 100`],
+    ['Raw Tier', r.rawTier],
+    ['Final Tier', r.finalTier],
+    ['Max Leverage', maxLevText(r.tierP?.maxLev)],
+    ['Tier Rule', tierRuleText()],
+    ['Age Cap', r.ageCapped ? `${r.ageDays}d < ${CFG.AGE_MIN_DAYS}d minimum` : 'No'],
+    ['Whitelist Cap', r.whitelistCap ? 'Prime capped to Major unless BTC/ETH' : 'No'],
+  ])}
+
+  <h3>Metric Breakdown with Detailed Scoring</h3>
+  ${table(['Metric', 'Score / Weight', 'Sub-score', 'Raw Value', 'Direction', 'Flag'], metricRows)}
+  ${table(
+    ['Metric', 'Formula', 'Why It Matters'],
+    Object.entries(r.metrics || {}).map(([, m]) => [m.label, m.detail?.formula || '—', m.detail?.why || '—'])
+  )}
+
+  <h3>Suggested Configuration</h3>
+  ${configRows.length
+    ? table(
+        ['Option', 'MaxLeverage', 'IMR', 'MMR', 'mmFactor', 'StepPrice', 'StepSize', 'MinOrderStep', 'OILimitSteps', 'MaxOrderStep', 'PriceBand', 'ImpactNotional'],
+        configRows.map(c => [c.tier, c.maxLev, c.imr, c.mmr, c.mmFactor, c.stepPrice, c.stepSize, c.minOrderStep, c.oiLimitSteps, c.maxOrderStep, c.priceBand, c.impactNotional])
+      )
+    : '<p>No suggested configuration is generated because the listing gates did not pass.</p>'}
+
+  <h3>Referenced Exchange Settings</h3>
+  ${table(
+    ['Exchange', 'Market', 'Status', 'Max Lev', 'StepSize', 'StepPrice', 'IMR', 'MMR', 'CMR', 'Limit'],
+    refRows.map(x => [x.venue, x.market, x.status, x.maxLev, x.stepSize, x.stepPrice, x.imr, x.mmr, x.cmr, x.limit])
+  )}
+</body>
+</html>`;
+}
+
+function downloadTextFile(filename, content, type = 'text/plain') {
+  const blob = new Blob([content], { type });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+function exportResult(format) {
+  const r = selectedCgId ? resultCache.get(selectedCgId) : null;
+  if (!r) {
+    alert('No completed token assessment is available to export yet.');
+    return;
+  }
+  if (format === 'markdown') {
+    downloadTextFile(`${reportFileBase(r)}.md`, buildMarkdownReport(r), 'text/markdown;charset=utf-8');
+    return;
+  }
+  if (format === 'pdf') {
+    const w = window.open('', '_blank');
+    if (!w) {
+      alert('Allow pop-ups to open the print-ready PDF report.');
+      return;
+    }
+    w.document.open();
+    w.document.write(buildPdfReportHtml(r));
+    w.document.close();
+    w.focus();
+    setTimeout(() => w.print(), 300);
+  }
+}
+
 function finalTierForRawOption(r, rawTier) {
   if (!r?.allPass || rawTier === 'Rejected') return 'Rejected';
   return computeFinalTier(r.symbol, rawTier, r.feedGrade, r.ageDays);
@@ -2512,24 +2935,26 @@ function renderProgressiveDetail(st) {
     : `<div style="width:52px;height:52px;border-radius:14px;background:${color}20;border:1.5px solid ${color}50;display:flex;align-items:center;justify-content:center;font-weight:800;font-size:20px;color:${color};">${symbol[0]}</div>`;
 
   html += `
-    <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:24px;flex-wrap:wrap;margin-bottom:28px;">
-      <div style="display:flex;align-items:center;gap:16px;">
+    <div class="detail-header">
+      <div class="detail-avatar">
         ${avatar}
-        <div>
-          <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
-            <h1 style="font-size:22px;font-weight:800;color:var(--text);margin:0;letter-spacing:-0.5px;">${name}</h1>
-            <span style="font-size:14px;font-weight:600;color:var(--muted);">${symbol}</span>
-            ${!d ? (errs.detail ? fail(errs.detail) : ld) : ''}
-          </div>
-          <div style="font-size:12px;color:var(--muted);margin-top:4px;">Rank ${rank ? '#'+rank : '—'} &bull; Data: CoinGecko + Hyperliquid</div>
-        </div>
       </div>
-      <div style="display:flex;gap:12px;flex-wrap:wrap;">
+      <div class="detail-identity">
+        <div class="detail-title-line">
+          <h1>${name}</h1>
+          <span style="font-size:14px;font-weight:600;color:var(--muted);">${symbol}</span>
+          ${!d ? (errs.detail ? fail(errs.detail) : ld) : ''}
+        </div>
+        <div class="detail-subline">Rank ${rank ? '#'+rank : '—'} &bull; Data: CoinGecko + Hyperliquid</div>
+      </div>
+      <div class="detail-actions">
         ${renderRefreshButton(!st.complete)}
+      </div>
+      <div class="detail-stats">
         ${[['PRICE', price!==null?fmtPrice(price):(errs.detail?fail(errs.detail):ld)], ['FDMC', fdmc!==null?fmtBig(fdmc):(errs.detail?fail(errs.detail):ld)], ['MCAP', mcap!==null?fmtBig(mcap):(errs.detail?fail(errs.detail):ld)]].map(([l,v]) => `
-          <div style="background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:12px 18px;text-align:right;">
-            <div style="font-size:11px;color:var(--muted);margin-bottom:2px;font-weight:500;">${l}</div>
-            <div class="mono" style="font-size:18px;font-weight:700;color:var(--text);">${v}</div>
+          <div class="detail-stat-card">
+            <div class="detail-stat-label">${l}</div>
+            <div class="mono detail-stat-value">${v}</div>
           </div>`).join('')}
       </div>
     </div>
@@ -3344,28 +3769,46 @@ function renderDetail(r) {
 
   const tierLabel = r.finalTier + (r.whitelistCap ? ' [whitelist cap]' : '') + (r.ageCapped ? ' [age cap]' : '');
   html += `
-    <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:24px;flex-wrap:wrap;margin-bottom:28px;">
-      <div style="display:flex;align-items:center;gap:16px;">
+    <div class="detail-header">
+      <div class="detail-avatar">
         ${avatar}
-        <div>
-          <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
-            <h1 style="font-size:22px;font-weight:800;color:var(--text);margin:0;letter-spacing:-0.5px;">${r.name}</h1>
-            <span style="font-size:14px;font-weight:600;color:var(--muted);">${r.symbol}</span>
-            <span class="${tierClass(r.finalTier)}" style="font-size:11px;font-weight:700;letter-spacing:0.5px;padding:4px 10px;border-radius:6px;">${tierLabel}</span>
-            ${r.allPass
-              ? `<span style="background:rgba(34,197,94,0.08);border:1px solid rgba(34,197,94,0.25);color:var(--green);font-size:11px;font-weight:700;padding:4px 10px;border-radius:6px;">ELIGIBLE</span>`
-              : `<span style="background:rgba(239,68,68,0.10);border:1px solid rgba(239,68,68,0.25);color:var(--red);font-size:11px;font-weight:700;padding:4px 10px;border-radius:6px;">NOT ELIGIBLE</span>`
-            }
-          </div>
-          <div style="font-size:12px;color:var(--muted);margin-top:4px;">Rank #${r.rank || '—'} &bull; Data: CoinGecko + Hyperliquid</div>
+      </div>
+      <div class="detail-identity">
+        <div class="detail-title-line">
+          <h1>${r.name}</h1>
+          <span style="font-size:14px;font-weight:600;color:var(--muted);">${r.symbol}</span>
+          <span class="${tierClass(r.finalTier)}" style="font-size:11px;font-weight:700;letter-spacing:0.5px;padding:4px 10px;border-radius:6px;">${tierLabel}</span>
+          ${r.allPass
+            ? `<span style="background:rgba(34,197,94,0.08);border:1px solid rgba(34,197,94,0.25);color:var(--green);font-size:11px;font-weight:700;padding:4px 10px;border-radius:6px;">ELIGIBLE</span>`
+            : `<span style="background:rgba(239,68,68,0.10);border:1px solid rgba(239,68,68,0.25);color:var(--red);font-size:11px;font-weight:700;padding:4px 10px;border-radius:6px;">NOT ELIGIBLE</span>`
+          }
+        </div>
+        <div class="detail-subline">Rank #${r.rank || '—'} &bull; Data: CoinGecko + Hyperliquid</div>
+      </div>
+      <div class="detail-actions">
+        ${renderRefreshButton(false)}
+        <div class="export-actions" aria-label="Export assessment">
+          <button class="export-btn" disabled title="Export temporarily disabled" aria-label="Export assessment as Markdown disabled">
+            <svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 3v12m0 0l-4-4m4 4l4-4"/>
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 17v2a2 2 0 002 2h12a2 2 0 002-2v-2"/>
+            </svg>
+            MD
+          </button>
+          <button class="export-btn" disabled title="Export temporarily disabled" aria-label="Export assessment as PDF disabled">
+            <svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 3h7l5 5v13H7z"/>
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14 3v5h5M9 13h6M9 17h4"/>
+            </svg>
+            PDF
+          </button>
         </div>
       </div>
-      <div style="display:flex;gap:12px;flex-wrap:wrap;">
-        ${renderRefreshButton(false)}
+      <div class="detail-stats">
         ${[['PRICE', fmtPrice(r.price)], ['FDMC', fmtBig(r.fdmc)], ['MCAP', fmtBig(r.mcap)]].map(([l, v]) => `
-          <div style="background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:12px 18px;text-align:right;">
-            <div style="font-size:11px;color:var(--muted);margin-bottom:2px;font-weight:500;">${l}</div>
-            <div class="mono" style="font-size:18px;font-weight:700;color:var(--text);">${v}</div>
+          <div class="detail-stat-card">
+            <div class="detail-stat-label">${l}</div>
+            <div class="mono detail-stat-value">${v}</div>
           </div>`).join('')}
       </div>
     </div>
