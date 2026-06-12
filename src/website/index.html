@@ -431,6 +431,15 @@
     .rise-market-status.post-only { color: var(--yellow); }
     .rise-market-status.offline { color: var(--red); }
 
+    .radar-row-grid {
+      display: grid;
+      grid-template-columns: 22px minmax(100px,1fr) minmax(60px,82px) 58px 68px 68px;
+      column-gap: 6px;
+      align-items: center;
+    }
+    .radar-row { padding: 0 12px 0 8px; border-bottom: 1px solid var(--border); }
+    .radar-row:last-child { border-bottom: none; }
+
     @media (max-width: 1280px) {
       #right-panel { flex-direction: column; }
       #detail-panel { width: 100%; }
@@ -1949,6 +1958,1327 @@ async function analyzeTokenProg(cgId, symbol, safetyScore, feedGrade, cmcId = nu
   return result;
 }
 
+// ─── LISTING RADAR ───────────────────────────────────────────────────────────
+// Exact translation of notes/token_listing/01_listing_radar.ipynb
+// R = 20·S_att + 15·S_price + 25·S_vol + 25·S_OI + 15·S_lev
+
+const RADAR_W = { att: 20, price: 15, vol: 25, oi: 25, lev: 15 };
+const RADAR_AXES = [
+  { key: 'att',   label: 'Attention' },
+  { key: 'price', label: 'Price' },
+  { key: 'vol',   label: 'Vol Accel' },
+  { key: 'oi',    label: 'OI Growth' },
+  { key: 'lev',   label: 'Funding Rate' },
+];
+
+let radarState = { status: 'idle', tokens: [], error: null, loadedAt: null };
+const RADAR_INITIAL_DISPLAY_COUNT = 10;
+const RADAR_MAX_DISPLAY_COUNT = 50;
+const RADAR_REFRESH_MS = 60_000;
+let radarDisplayCount = RADAR_INITIAL_DISPLAY_COUNT;
+let radarRefreshTimer = null;
+const radarDetailCache = new Map(); // cgId → { att, price, vol, oi, lev, R }
+let selectedRadarSymbol = null;
+
+const RADAR_BUCKET_DETAILS = {
+  att:   { title: 'Market Attention',     method: 'Sentiment 60% + technical 1h/1d blend 40%' },
+  price: { title: 'Price Action',         method: '1h move, 24h change, 7d direction, BTC decorrelation' },
+  vol:   { title: 'Volume Acceleration',  method: 'Perp volume acceleration + perp/spot volume ratio' },
+  oi:    { title: 'OI Growth',            method: 'OI Spearman trend + OI/market-cap ratio' },
+  lev:   { title: 'Funding Rate',         method: 'Funding level, negative-to-positive flip, persistence' },
+};
+
+// ── Notebook helpers ──────────────────────────────────────────────────────────
+
+// Weighted sum, None→0, weights NOT redistributed (notebook: renorm())
+function renorm(scores, weights) {
+  let s = 0;
+  for (const [k, w] of Object.entries(weights)) {
+    const v = scores[k];
+    s += w * (v !== null && v !== undefined && Number.isFinite(v) ? Math.max(0, Math.min(1, v)) : 0);
+  }
+  return s;
+}
+
+// min(1, max(0, x/theta))
+function fClamp(x, theta) {
+  if (x === null || x === undefined || !Number.isFinite(x)) return null;
+  return Math.min(1, Math.max(0, x / theta));
+}
+
+// Spearman ρ of values against time index [0..n-1]
+// max(0, ρ) clamp is applied by the OI scorer — the raw ρ is returned here
+function spearmanCorr(values) {
+  const n = values.length;
+  if (n < 4) return null;
+  const sorted = values.map((v, i) => ({ v, i })).sort((a, b) => a.v - b.v);
+  const ranks = new Array(n);
+  for (let i = 0; i < n; i++) ranks[sorted[i].i] = i;
+  let dSq = 0;
+  for (let i = 0; i < n; i++) dSq += (i - ranks[i]) ** 2;
+  return 1 - 6 * dSq / (n * (n * n - 1));
+}
+
+// Pearson correlation of two same-length arrays
+function pearsonCorr(xs, ys) {
+  const n = xs.length;
+  if (n < 4) return null;
+  const mx = xs.reduce((a, b) => a + b, 0) / n;
+  const my = ys.reduce((a, b) => a + b, 0) / n;
+  let num = 0, dx2 = 0, dy2 = 0;
+  for (let i = 0; i < n; i++) {
+    const dx = xs[i] - mx, dy = ys[i] - my;
+    num += dx * dy; dx2 += dx * dx; dy2 += dy * dy;
+  }
+  return (dx2 > 0 && dy2 > 0) ? num / Math.sqrt(dx2 * dy2) : null;
+}
+
+// Symbol normalisation (mirrors notebook normalize_symbol + alias_map)
+const _QUOTE_SFX = ['USDT','USDC','BUSD','FDUSD','USDP','USD'];
+const _ALIAS = {
+  '1000SHIB':'SHIB','1000BONK':'BONK','1000PEPE':'PEPE','1000FLOKI':'FLOKI',
+  '1000LUNC':'LUNC','1000XEC':'XEC','1000SATS':'SATS','1000BTT':'BTT',
+  '1MBABYDOGE':'BABYDOGE','1000000MOG':'MOG','1000000BABYDOGE':'BABYDOGE',
+};
+const _STABLES = new Set([
+  'USDT','USDC','BUSD','DAI','FDUSD','TUSD','USDD','USDP','GUSD','FRAX',
+  'LUSD','SUSD','USDE','SUSDE','RLUSD','USDX','EURC','PYUSD','USD1',
+]);
+const _LEV_PAT = ['3L','3S','2L','2S','5L','5S','10L','10S','BULL','BEAR','UP','DOWN','HEDGE'];
+
+function normRadarSym(sym) {
+  sym = String(sym || '').trim().toUpperCase();
+  for (const sfx of _QUOTE_SFX) { if (sym.endsWith(sfx)) { sym = sym.slice(0, -sfx.length); break; } }
+  return _ALIAS[sym] || sym;
+}
+function isRadarExcluded(sym) {
+  return _STABLES.has(sym) || _LEV_PAT.some(p => sym.endsWith(p) || sym.startsWith(p));
+}
+
+// ── Radar API fetchers ────────────────────────────────────────────────────────
+
+async function fetchBinanceAllTicker() {
+  const r = await fetchWithTimeout('https://fapi.binance.com/fapi/v1/ticker/24hr', {}, 12000);
+  if (!r.ok) throw new Error(`all-ticker ${r.status}`);
+  return r.json();
+}
+async function fetchRadarOIHist(perpSym) {
+  const r = await fetchWithTimeout(
+    `https://fapi.binance.com/futures/data/openInterestHist?symbol=${encodeURIComponent(perpSym)}&period=1h&limit=720`, {}, 12000);
+  if (!r.ok) throw new Error(`OI hist ${r.status}`);
+  return r.json();
+}
+async function fetchRadarKlines(sym, interval, limit) {
+  const r = await fetchWithTimeout(
+    `https://fapi.binance.com/fapi/v1/klines?symbol=${encodeURIComponent(sym)}&interval=${interval}&limit=${limit}`, {}, 12000);
+  if (!r.ok) throw new Error(`klines ${r.status}`);
+  return r.json();
+}
+async function fetchRadarFundingHist(perpSym) {
+  const r = await fetchWithTimeout(
+    `https://fapi.binance.com/fapi/v1/fundingRate?symbol=${encodeURIComponent(perpSym)}&limit=21`, {}, 10000);
+  if (!r.ok) throw new Error(`funding ${r.status}`);
+  return r.json();
+}
+async function fetchRadarSpotKlines(spotSym) {
+  const r = await fetchWithTimeout(
+    `https://api.binance.com/api/v3/klines?symbol=${encodeURIComponent(spotSym)}&interval=1d&limit=35`, {}, 10000);
+  if (!r.ok) throw new Error(`spot klines ${r.status}`);
+  return r.json();
+}
+async function fetchBTCRefKlines() {
+  const r = await fetchWithTimeout(
+    'https://api.binance.com/api/v3/klines?symbol=BTCUSDT&interval=1d&limit=32', {}, 10000);
+  if (!r.ok) throw new Error(`BTC ref ${r.status}`);
+  return r.json();
+}
+// Parse JSON from r.jina.ai text response (same pattern as parseJinaJson)
+function _parseJinaRadar(text) {
+  const marker = 'Markdown Content:';
+  const body = text.includes(marker) ? text.slice(text.indexOf(marker) + marker.length).trim() : text.trim();
+  const start = body.indexOf('{'), end = body.lastIndexOf('}');
+  if (start < 0 || end < start) throw new Error('no JSON in jina response');
+  return JSON.parse(body.slice(start, end + 1));
+}
+
+async function fetchApexData(type, interval = null) {
+  const base = 'https://www.binance.com/bapi/apex/v1/friendly/apex/web/opportunity/assets';
+  const qs   = interval ? `?type=${type}&interval=${interval}` : `?type=${type}`;
+  const url  = base + qs;
+  const jinaUrl = `https://r.jina.ai/http://www.binance.com/bapi/apex/v1/friendly/apex/web/opportunity/assets${qs}`;
+  for (const [src, isJina] of [[url, false], [jinaUrl, true]]) {
+    try {
+      const r = await fetchWithTimeout(src, {}, 12000);
+      if (!r.ok) continue;
+      const data = isJina ? _parseJinaRadar(await r.text()) : await r.json();
+      const items = data?.data?.items;
+      if (!Array.isArray(items)) continue;
+      const out = {};
+      for (const item of items) {
+        const sym = item.asset || item.baseAsset;
+        if (sym) out[sym] = item.metrics || {};
+      }
+      return out;
+    } catch {}
+  }
+  return {};
+}
+async function fetchBinanceSpotList() {
+  const url = 'https://www.binance.com/bapi/composite/v1/public/marketing/symbol/list';
+  const jinaUrl = `https://r.jina.ai/http://www.binance.com/bapi/composite/v1/public/marketing/symbol/list`;
+  for (const [src, isJina] of [[url, false], [jinaUrl, true]]) {
+    try {
+      const r = await fetchWithTimeout(src, {}, 14000);
+      if (!r.ok) continue;
+      const data = isJina ? _parseJinaRadar(await r.text()) : await r.json();
+      if (Array.isArray(data?.data)) return data.data;
+    } catch {}
+  }
+  return [];
+}
+async function fetchCMCTrending() {
+  // CMC requires browser-like headers; use r.jina.ai as proxy
+  const cmcPath = 'http://api.coinmarketcap.com/data-api/v3/unified-trending/listing?interval=24h&pageNum=1&pageSize=200';
+  try {
+    const r = await fetchWithTimeout(`https://r.jina.ai/${cmcPath}`, {}, 16000);
+    if (r.ok) {
+      const data = _parseJinaRadar(await r.text());
+      const items = data?.data?.list;
+      if (Array.isArray(items)) {
+        items.forEach(item => { if (!item.symbol) item.symbol = item.tokenSymbol || ''; });
+        return items;
+      }
+    }
+  } catch {}
+  return [];
+}
+
+// ── Notebook-accurate score functions ─────────────────────────────────────────
+
+// S_att = renorm({sent:0.60, tech:0.40})
+// tech  = renorm({1h:0.30, 1d:0.70})
+function scoreRadarAtt(sentMetrics, tech1hMetrics, tech1dMetrics) {
+  const rawSent = parseFloat(sentMetrics?.sentiment_score?.value ?? sentMetrics?.sentiment_score ?? NaN);
+  const s_sent  = Number.isFinite(rawSent) ? Math.min(rawSent / 10, 1) : null;
+
+  const raw1h = parseFloat(tech1hMetrics?.technical_score_1h?.value ?? tech1hMetrics?.technical_score_1h ?? NaN);
+  const raw1d = parseFloat(tech1dMetrics?.technical_score_1d?.value ?? tech1dMetrics?.technical_score_1d ?? NaN);
+  const t1h   = Number.isFinite(raw1h) ? raw1h / 10 : null;
+  const t1d   = Number.isFinite(raw1d) ? raw1d / 10 : null;
+  const s_tech = (t1h !== null || t1d !== null)
+    ? renorm({ h: t1h, d: t1d }, { h: 0.30, d: 0.70 }) : null;
+
+  return renorm({ sent: s_sent, tech: s_tech }, { sent: 0.60, tech: 0.40 });
+}
+
+// S_price = renorm({s1h:0.25, s24h:0.25, dir:0.25, corr:0.25})
+// dayChangeFrac: priceChangePercent/100 (fraction, e.g. 0.2043 for +20.43%)
+// s_24h: positive only; fClamp(dayChange, 0.20)
+// s_1h: max positive open-to-close return last 12 completed 1h candles; fClamp(maxR, 0.05)
+// s_dir: close-to-close win rate last 7 daily candles
+// s_corr: max(0, 1-|Pearson_BTC|) over 30d log-returns
+function scoreRadarPrice(dayChangeFrac, klines1h, klines1d, btcCloses) {
+  // s_24h: positive only
+  let s_24h = null;
+  if (dayChangeFrac !== null && Number.isFinite(dayChangeFrac)) {
+    s_24h = dayChangeFrac > 0 ? fClamp(dayChangeFrac, 0.20) : 0.0;
+  }
+
+  // s_1h: max positive open→close over last 12 completed 1h candles
+  let s_1h = null;
+  if (Array.isArray(klines1h) && klines1h.length >= 2) {
+    const completed = klines1h.slice(0, -1).slice(-12);
+    const posReturns = completed
+      .map(k => { const o = parseFloat(k[1]), c = parseFloat(k[4]); return o > 0 ? (c-o)/o : 0; })
+      .filter(r => r > 0);
+    s_1h = fClamp(posReturns.length ? Math.max(...posReturns) : 0, 0.05);
+  }
+
+  // s_dir: close-to-close win rate last 7 complete daily candles
+  let s_dir = null;
+  if (Array.isArray(klines1d) && klines1d.length >= 9) {
+    const closes = klines1d.slice(0, -1).map(k => parseFloat(k[4]));
+    const last8 = closes.slice(-8);
+    if (last8.length === 8) {
+      s_dir = last8.slice(1).filter((c, i) => c > last8[i]).length / 7;
+    }
+  }
+
+  // s_corr: Pearson decorrelation from BTC (30d log-returns)
+  let s_corr = null;
+  if (Array.isArray(klines1d) && klines1d.length >= 17 && Array.isArray(btcCloses) && btcCloses.length >= 15) {
+    const tokCloses = klines1d.slice(0, -1).map(k => parseFloat(k[4]));
+    const n = Math.min(tokCloses.length, btcCloses.length, 31);
+    if (n >= 16) {
+      const tR = [], bR = [];
+      for (let i = 1; i < n; i++) {
+        const tp = tokCloses[tokCloses.length - n + i], tp0 = tokCloses[tokCloses.length - n + i - 1];
+        const bp = btcCloses[btcCloses.length - n + i],  bp0 = btcCloses[btcCloses.length - n + i - 1];
+        if (tp > 0 && tp0 > 0 && bp > 0 && bp0 > 0) {
+          tR.push(Math.log(tp / tp0));
+          bR.push(Math.log(bp / bp0));
+        }
+      }
+      if (tR.length >= 14) {
+        const rho = pearsonCorr(tR, bR);
+        if (rho !== null) s_corr = Math.max(0, 1 - Math.abs(rho));
+      }
+    }
+  }
+
+  return renorm({ s1h: s_1h, s24h: s_24h, dir: s_dir, corr: s_corr },
+                { s1h: 0.25, s24h: 0.25, dir: 0.25, corr: 0.25 });
+}
+
+// S_vol = renorm({accel:0.50, PS:0.50})
+// s_accel = renorm({7d:0.60, 24h:0.40}) log-scaled (7d ceil=3×, 24h ceil=4× and >$10M)
+// s_PS = renorm({level:0.60, trend:0.40}) (perp/spot ratio level + trend vs 7d avg)
+function scoreRadarVol(quoteVol24h, klines1d, spotKlines1d) {
+  let s_accel = null;
+  if (Array.isArray(klines1d) && klines1d.length >= 5) {
+    const completed = klines1d.slice(0, -1);
+    const vols = completed.map(k => parseFloat(k[7] || 0));
+    const avg30 = vols.slice(-30).reduce((a, b) => a + b, 0) / Math.min(30, vols.length);
+    if (avg30 > 0) {
+      const avg7 = vols.slice(-7).reduce((a, b) => a + b, 0) / Math.min(7, vols.length);
+      const s7   = avg7 > 0 ? fClamp(Math.log(avg7 / avg30) / Math.log(3), 1.0) : null;
+      let s24h_a = null;
+      if (Number.isFinite(quoteVol24h) && quoteVol24h > 10_000_000)
+        s24h_a = fClamp(Math.log(quoteVol24h / avg30) / Math.log(4), 1.0);
+      if (s7 !== null || s24h_a !== null)
+        s_accel = renorm({ d7: s7, d24h: s24h_a }, { d7: 0.60, d24h: 0.40 });
+    }
+  }
+
+  let s_PS = null;
+  if (Array.isArray(spotKlines1d) && spotKlines1d.length >= 2 && Number.isFinite(quoteVol24h)) {
+    const spotCompleted = spotKlines1d.slice(0, -1);
+    const spotVols = spotCompleted.map(k => parseFloat(k[7] || 0));
+    const spotVol24h = spotVols[spotVols.length - 1] || null;
+    if (spotVol24h && spotVol24h > 0) {
+      const ratioNow = quoteVol24h / spotVol24h;
+      const s_level  = fClamp(ratioNow, 1.5);
+      // Trend: ratio_now vs 7d avg daily ratio
+      let s_trend = null;
+      if (Array.isArray(klines1d) && klines1d.length >= 5) {
+        const futVols = klines1d.slice(0, -1).map(k => parseFloat(k[7] || 0));
+        const n7 = Math.min(7, futVols.length, spotVols.length);
+        if (n7 >= 3) {
+          const dailyRatios = [];
+          for (let i = 0; i < n7; i++) {
+            const sv = spotVols[spotVols.length - n7 + i];
+            const fv = futVols[futVols.length - n7 + i];
+            if (sv > 0) dailyRatios.push(fv / sv);
+          }
+          const avgR = dailyRatios.reduce((a, b) => a + b, 0) / dailyRatios.length;
+          if (avgR > 0) s_trend = fClamp(ratioNow / avgR - 1, 0.30);
+        }
+      }
+      s_PS = renorm({ level: s_level, trend: s_trend }, { level: 0.60, trend: 0.40 });
+    }
+  }
+
+  return renorm({ accel: s_accel, PS: s_PS }, { accel: 0.50, PS: 0.50 });
+}
+
+// S_OI = renorm({trend:0.60, mcap:0.40})
+// s_OI_trend = renorm({7d:0.40, 30d:0.60}) with max(0, rho) — declining OI clamped to 0
+// Uses coin-denominated sumOpenInterest (not USD value)
+// s_OI_mcap = fClamp(OI_notional / (MCap * 0.15))
+function scoreRadarOI(oiHist, markPrice, marketCap) {
+  let s_OI_trend = null;
+  if (Array.isArray(oiHist) && oiHist.length >= 10) {
+    const sorted = [...oiHist].sort((a, b) => a.timestamp - b.timestamp);
+    const vals   = sorted.map(h => parseFloat(h.sumOpenInterest || 0));
+    const rho7d  = vals.length >= 10 ? spearmanCorr(vals.slice(-168)) : null;
+    const rho30d = spearmanCorr(vals);
+    const s7  = rho7d  !== null ? Math.max(0, rho7d)  : null;
+    const s30 = rho30d !== null ? Math.max(0, rho30d) : null;
+    if (s7 !== null || s30 !== null)
+      s_OI_trend = renorm({ d7: s7, d30: s30 }, { d7: 0.40, d30: 0.60 });
+  }
+
+  let s_OI_mcap = null;
+  if (Array.isArray(oiHist) && oiHist.length > 0 && markPrice > 0 && marketCap > 0) {
+    const lastOI = parseFloat(oiHist[oiHist.length - 1]?.sumOpenInterest || 0);
+    const oiNotional = lastOI * markPrice;
+    s_OI_mcap = fClamp(oiNotional / (marketCap * 0.15), 1.0);
+  }
+
+  return renorm({ trend: s_OI_trend, mcap: s_OI_mcap }, { trend: 0.60, mcap: 0.40 });
+}
+
+// S_lev = renorm({fund:0.45, flip:0.35, persist:0.20})
+// s_fund_level: positive only, threshold 0.00015 (0.015% per 8h = 1.5× neutral)
+// s_flip: 72h linear decay from neg→pos flip; 0.5 all-positive; 0 if negative
+// s_persist: fraction positive last 21 settlements
+function scoreRadarLev(fundingHist, lastFundingRate) {
+  const sorted = Array.isArray(fundingHist)
+    ? [...fundingHist].sort((a, b) => a.fundingTime - b.fundingTime) : [];
+  const rates = sorted.map(h => parseFloat(h.fundingRate));
+  const n = rates.length;
+  const fr = Number.isFinite(lastFundingRate) ? lastFundingRate : (n ? rates[n - 1] : null);
+
+  const s_level   = (fr !== null && fr > 0) ? Math.min(1, Math.max(0, fr / 0.00015)) : 0;
+  const s_persist = n >= 5 ? rates.filter(r => r > 0).length / n : null;
+
+  // s_flip: find most recent neg→pos in last 7 settlements, 72h linear decay
+  const last7r = rates.slice(-7);
+  const last7t = sorted.slice(-7).map(h => h.fundingTime);
+  let s_flip = null;
+  for (let i = last7r.length - 1; i > 0; i--) {
+    if (last7r[i - 1] < 0 && last7r[i] > 0) {
+      const hoursSince = (last7t[last7r.length - 1] - last7t[i]) / 3_600_000;
+      s_flip = Math.max(0, 1 - hoursSince / 72);
+      break;
+    }
+  }
+  if (s_flip === null) s_flip = (fr !== null && fr > 0) ? 0.5 : 0;
+
+  return renorm({ fund: s_level, flip: s_flip, persist: s_persist },
+                { fund: 0.45, flip: 0.35, persist: 0.20 });
+}
+
+function radarSub(label, score, weight, raw, note) {
+  return { label, score, weight, raw: raw || '—', note: note || '' };
+}
+
+function fmtRadarSubScore(v) {
+  return v === null || v === undefined || !Number.isFinite(v) ? '—' : Math.round(v * 100).toString();
+}
+
+function scoreRadarAttDetail(sentMetrics, tech1hMetrics, tech1dMetrics) {
+  const rawSent = parseFloat(sentMetrics?.sentiment_score?.value ?? sentMetrics?.sentiment_score ?? NaN);
+  const sSent = Number.isFinite(rawSent) ? Math.min(rawSent / 10, 1) : null;
+  const raw1h = parseFloat(tech1hMetrics?.technical_score_1h?.value ?? tech1hMetrics?.technical_score_1h ?? NaN);
+  const raw1d = parseFloat(tech1dMetrics?.technical_score_1d?.value ?? tech1dMetrics?.technical_score_1d ?? NaN);
+  const s1h = Number.isFinite(raw1h) ? raw1h / 10 : null;
+  const s1d = Number.isFinite(raw1d) ? raw1d / 10 : null;
+  const score = renorm({ sent: sSent, tech1h: s1h, tech1d: s1d }, { sent: 0.60, tech1h: 0.12, tech1d: 0.28 });
+  return {
+    score,
+    subs: [
+      radarSub('Sentiment', sSent, 0.60, Number.isFinite(rawSent) ? rawSent.toFixed(1) + '/10' : '—', 'Binance apex sentiment score'),
+      radarSub('Technical 1h', s1h, 0.12, Number.isFinite(raw1h) ? raw1h.toFixed(1) + '/10' : '—', 'Short-horizon technical score'),
+      radarSub('Technical 1d', s1d, 0.28, Number.isFinite(raw1d) ? raw1d.toFixed(1) + '/10' : '—', 'Daily technical score'),
+    ],
+  };
+}
+
+function scoreRadarPriceDetail(dayChangeFrac, klines1h, klines1d, btcCloses) {
+  let s24h = null;
+  if (dayChangeFrac !== null && Number.isFinite(dayChangeFrac)) {
+    s24h = dayChangeFrac > 0 ? fClamp(dayChangeFrac, 0.20) : 0.0;
+  }
+
+  let s1h = null, max1h = null;
+  if (Array.isArray(klines1h) && klines1h.length >= 2) {
+    const completed = klines1h.slice(0, -1).slice(-12);
+    const posReturns = completed
+      .map(k => { const o = parseFloat(k[1]), c = parseFloat(k[4]); return o > 0 ? (c - o) / o : 0; })
+      .filter(r => r > 0);
+    max1h = posReturns.length ? Math.max(...posReturns) : 0;
+    s1h = fClamp(max1h, 0.05);
+  }
+
+  let sDir = null, upDays = null;
+  if (Array.isArray(klines1d) && klines1d.length >= 9) {
+    const closes = klines1d.slice(0, -1).map(k => parseFloat(k[4]));
+    const last8 = closes.slice(-8);
+    if (last8.length === 8) {
+      upDays = last8.slice(1).filter((c, i) => c > last8[i]).length;
+      sDir = upDays / 7;
+    }
+  }
+
+  let sCorr = null, rho = null;
+  if (Array.isArray(klines1d) && klines1d.length >= 17 && Array.isArray(btcCloses) && btcCloses.length >= 15) {
+    const tokCloses = klines1d.slice(0, -1).map(k => parseFloat(k[4]));
+    const n = Math.min(tokCloses.length, btcCloses.length, 31);
+    if (n >= 16) {
+      const tR = [], bR = [];
+      for (let i = 1; i < n; i++) {
+        const tp = tokCloses[tokCloses.length - n + i], tp0 = tokCloses[tokCloses.length - n + i - 1];
+        const bp = btcCloses[btcCloses.length - n + i], bp0 = btcCloses[btcCloses.length - n + i - 1];
+        if (tp > 0 && tp0 > 0 && bp > 0 && bp0 > 0) {
+          tR.push(Math.log(tp / tp0));
+          bR.push(Math.log(bp / bp0));
+        }
+      }
+      if (tR.length >= 14) {
+        rho = pearsonCorr(tR, bR);
+        if (rho !== null) sCorr = Math.max(0, 1 - Math.abs(rho));
+      }
+    }
+  }
+
+  return {
+    score: renorm({ s1h, s24h, dir: sDir, corr: sCorr }, { s1h: 0.25, s24h: 0.25, dir: 0.25, corr: 0.25 }),
+    subs: [
+      radarSub('1h Price Move', s1h, 0.25, max1h !== null ? fmtPct(max1h) : '—', 'Max positive move across last 12 completed 1h candles'),
+      radarSub('24h Price Change', s24h, 0.25, dayChangeFrac !== null && Number.isFinite(dayChangeFrac) ? fmtPct(dayChangeFrac) : '—', 'Positive 24h move, threshold 20%'),
+      radarSub('7d Direction', sDir, 0.25, upDays !== null ? `${upDays}/7 up closes` : '—', 'Close-to-close win rate'),
+      radarSub('BTC Decorrelation', sCorr, 0.25, rho !== null ? `rho=${rho.toFixed(2)}` : '—', 'max(0, 1 - |BTC rho|)'),
+    ],
+  };
+}
+
+function scoreRadarVolDetail(quoteVol24h, klines1d, spotKlines1d) {
+  let s7 = null, s24h = null, ratio7 = null, ratio24 = null;
+  if (Array.isArray(klines1d) && klines1d.length >= 5) {
+    const completed = klines1d.slice(0, -1);
+    const vols = completed.map(k => parseFloat(k[7] || 0));
+    const avg30 = vols.slice(-30).reduce((a, b) => a + b, 0) / Math.min(30, vols.length);
+    if (avg30 > 0) {
+      const avg7 = vols.slice(-7).reduce((a, b) => a + b, 0) / Math.min(7, vols.length);
+      ratio7 = avg7 / avg30;
+      ratio24 = Number.isFinite(quoteVol24h) ? quoteVol24h / avg30 : null;
+      s7 = ratio7 > 0 ? fClamp(Math.log(ratio7) / Math.log(3), 1.0) : null;
+      if (Number.isFinite(quoteVol24h) && quoteVol24h > 10_000_000 && ratio24 > 0) {
+        s24h = fClamp(Math.log(ratio24) / Math.log(4), 1.0);
+      }
+    }
+  }
+
+  let sLevel = null, sTrend = null, ratioNow = null, ratioTrend = null;
+  if (Array.isArray(spotKlines1d) && spotKlines1d.length >= 2 && Number.isFinite(quoteVol24h)) {
+    const spotVols = spotKlines1d.slice(0, -1).map(k => parseFloat(k[7] || 0));
+    const spotVol24h = spotVols[spotVols.length - 1] || null;
+    if (spotVol24h && spotVol24h > 0) {
+      ratioNow = quoteVol24h / spotVol24h;
+      sLevel = fClamp(ratioNow, 1.5);
+      if (Array.isArray(klines1d) && klines1d.length >= 5) {
+        const futVols = klines1d.slice(0, -1).map(k => parseFloat(k[7] || 0));
+        const n7 = Math.min(7, futVols.length, spotVols.length);
+        if (n7 >= 3) {
+          const dailyRatios = [];
+          for (let i = 0; i < n7; i++) {
+            const sv = spotVols[spotVols.length - n7 + i];
+            const fv = futVols[futVols.length - n7 + i];
+            if (sv > 0) dailyRatios.push(fv / sv);
+          }
+          const avgR = dailyRatios.reduce((a, b) => a + b, 0) / dailyRatios.length;
+          if (avgR > 0) {
+            ratioTrend = ratioNow / avgR - 1;
+            sTrend = fClamp(ratioTrend, 0.30);
+          }
+        }
+      }
+    }
+  }
+
+  const sAccel = renorm({ d7: s7, d24h: s24h }, { d7: 0.60, d24h: 0.40 });
+  const sPS = renorm({ level: sLevel, trend: sTrend }, { level: 0.60, trend: 0.40 });
+  return {
+    score: renorm({ accel: sAccel, ps: sPS }, { accel: 0.50, ps: 0.50 }),
+    subs: [
+      radarSub('7d Volume Accel', s7, 0.30, Number.isFinite(ratio7) ? ratio7.toFixed(2) + 'x 30d' : '—', 'Log-scaled, full score at 3x'),
+      radarSub('24h Volume Accel', s24h, 0.20, Number.isFinite(ratio24) ? ratio24.toFixed(2) + 'x 30d' : '—', 'Log-scaled, full score at 4x with >$10M floor'),
+      radarSub('Perp/Spot Level', sLevel, 0.30, ratioNow !== null ? ratioNow.toFixed(2) + 'x' : '—', 'Full score at 1.5x perp/spot'),
+      radarSub('Perp/Spot Trend', sTrend, 0.20, ratioTrend !== null ? fmtPct(ratioTrend) : '—', 'Current ratio versus 7d average ratio'),
+    ],
+  };
+}
+
+function scoreRadarOIDetail(oiHist, markPrice, marketCap) {
+  let s7 = null, s30 = null, rho7 = null, rho30 = null;
+  if (Array.isArray(oiHist) && oiHist.length >= 10) {
+    const sorted = [...oiHist].sort((a, b) => a.timestamp - b.timestamp);
+    const vals = sorted.map(h => parseFloat(h.sumOpenInterest || 0));
+    rho7 = vals.length >= 10 ? spearmanCorr(vals.slice(-168)) : null;
+    rho30 = spearmanCorr(vals);
+    s7 = rho7 !== null ? Math.max(0, rho7) : null;
+    s30 = rho30 !== null ? Math.max(0, rho30) : null;
+  }
+
+  let sMcap = null, oiNotional = null, oiMcap = null;
+  if (Array.isArray(oiHist) && oiHist.length > 0 && markPrice > 0 && marketCap > 0) {
+    const lastOI = parseFloat(oiHist[oiHist.length - 1]?.sumOpenInterest || 0);
+    oiNotional = lastOI * markPrice;
+    oiMcap = oiNotional / marketCap;
+    sMcap = fClamp(oiMcap / 0.15, 1.0);
+  }
+
+  return {
+    score: renorm({ d7: s7, d30: s30, mcap: sMcap }, { d7: 0.24, d30: 0.36, mcap: 0.40 }),
+    subs: [
+      radarSub('OI Trend 7d', s7, 0.24, rho7 !== null ? `rho=${rho7.toFixed(2)}` : '—', 'Spearman OI trend over recent hourly values'),
+      radarSub('OI Trend 30d', s30, 0.36, rho30 !== null ? `rho=${rho30.toFixed(2)}` : '—', 'Spearman OI trend over full 30d window'),
+      radarSub('OI / MCap', sMcap, 0.40, oiMcap !== null ? fmtPct(oiMcap) : (oiNotional ? fmtBig(oiNotional) : '—'), 'Full score when OI notional reaches 15% of market cap'),
+    ],
+  };
+}
+
+function scoreRadarLevDetail(fundingHist, lastFundingRate) {
+  const sorted = Array.isArray(fundingHist)
+    ? [...fundingHist].sort((a, b) => a.fundingTime - b.fundingTime) : [];
+  const rates = sorted.map(h => parseFloat(h.fundingRate));
+  const n = rates.length;
+  const fr = Number.isFinite(lastFundingRate) ? lastFundingRate : (n ? rates[n - 1] : null);
+  const sLevel = (fr !== null && fr > 0) ? Math.min(1, Math.max(0, fr / 0.00015)) : 0;
+  const sPersist = n >= 5 ? rates.filter(r => r > 0).length / n : null;
+
+  const last7r = rates.slice(-7);
+  const last7t = sorted.slice(-7).map(h => h.fundingTime);
+  let sFlip = null, flipRaw = null;
+  for (let i = last7r.length - 1; i > 0; i--) {
+    if (last7r[i - 1] < 0 && last7r[i] > 0) {
+      const hoursSince = (last7t[last7r.length - 1] - last7t[i]) / 3_600_000;
+      sFlip = Math.max(0, 1 - hoursSince / 72);
+      flipRaw = `${hoursSince.toFixed(0)}h ago`;
+      break;
+    }
+  }
+  if (sFlip === null) {
+    sFlip = (fr !== null && fr > 0) ? 0.5 : 0;
+    flipRaw = fr !== null && fr > 0 ? 'positive, no recent flip' : 'not positive';
+  }
+
+  return {
+    score: renorm({ fund: sLevel, flip: sFlip, persist: sPersist }, { fund: 0.45, flip: 0.35, persist: 0.20 }),
+    subs: [
+      radarSub('Funding Level', sLevel, 0.45, fr !== null ? fmtFunding(fr) : '—', 'Positive only, full score at 0.015% per 8h'),
+      radarSub('Funding Flip', sFlip, 0.35, flipRaw, 'Negative-to-positive flip with 72h decay'),
+      radarSub('Funding Persistence', sPersist, 0.20, n ? `${rates.filter(r => r > 0).length}/${n} positive` : '—', 'Fraction of positive funding settlements'),
+    ],
+  };
+}
+
+function computeRadarR(b) {
+  return Math.round(RADAR_W.att * b.att + RADAR_W.price * b.price + RADAR_W.vol * b.vol + RADAR_W.oi * b.oi + RADAR_W.lev * b.lev);
+}
+
+// ── SVG radar chart ───────────────────────────────────────────────────────────
+
+function svgRadarChart(buckets, size = 110, color = '#f97316', showLabels = true) {
+  const cx = size / 2, cy = size / 2;
+  const rOut = size * 0.36;
+  const n = RADAR_AXES.length;
+
+  function pt(i, r) {
+    const a = (i * 2 * Math.PI / n) - Math.PI / 2;
+    return [cx + r * Math.cos(a), cy + r * Math.sin(a)];
+  }
+
+  // Grid rings
+  let grid = '';
+  for (const f of [0.25, 0.5, 0.75, 1.0]) {
+    const pts = Array.from({ length: n }, (_, i) => pt(i, rOut * f)).map(p => p.join(',')).join(' ');
+    const isOuter = f === 1;
+    grid += `<polygon points="${pts}" fill="none" stroke="${isOuter ? '#333648' : '#1e2233'}" stroke-width="${isOuter ? 0.8 : 0.4}"${isOuter ? '' : ' stroke-dasharray="2,2"'}/>`;
+  }
+  // Spokes
+  const spokes = RADAR_AXES.map((_, i) => {
+    const [px, py] = pt(i, rOut);
+    return `<line x1="${cx}" y1="${cy}" x2="${px}" y2="${py}" stroke="#1e2233" stroke-width="0.6"/>`;
+  }).join('');
+  // Data
+  const dataPts = RADAR_AXES.map(({ key }, i) => pt(i, rOut * Math.max(0, Math.min(1, buckets[key] ?? 0))));
+  const poly = dataPts.map(p => p.join(',')).join(' ');
+  const dots = dataPts.map(([dx, dy]) => `<circle cx="${dx}" cy="${dy}" r="1.8" fill="${color}"/>`).join('');
+  // Labels
+  const labels = showLabels ? RADAR_AXES.map(({ label }, i) => {
+    const [lx, ly] = pt(i, rOut + 11);
+    return `<text x="${lx}" y="${ly}" font-size="7" fill="#64748b" text-anchor="middle" dominant-baseline="middle" font-family="Inter,sans-serif">${label}</text>`;
+  }).join('') : '';
+
+  return `<svg width="${size}" height="${size}" viewBox="0 0 ${size} ${size}" style="overflow:visible;display:block;">
+    ${grid}${spokes}
+    <polygon points="${poly}" fill="${color}22" stroke="${color}" stroke-width="1.3" stroke-linejoin="round"/>
+    ${dots}${labels}
+  </svg>`;
+}
+
+// ── Radar detail chart for selected token ─────────────────────────────────────
+
+function renderRadarDetailSection(cgId) {
+  const cached = radarDetailCache.get(cgId);
+  const placeholder = `<div id="detail-radar-section" data-cgid="${cgId}">`;
+
+  if (!cached) return placeholder + `
+    <div style="display:flex;align-items:center;gap:10px;padding:12px 0;color:var(--muted);font-size:12px;">
+      <span class="spinner-sm"></span><span>Computing radar profile…</span>
+    </div></div>`;
+
+  if (cached === 'error') return placeholder + `
+    <div style="font-size:12px;color:var(--muted);padding:4px 0;">Radar profile unavailable (no Binance perp data)</div></div>`;
+
+  const { att, price, vol, oi, lev, R } = cached;
+  const buckets = { att, price, vol, oi, lev };
+  const chart = svgRadarChart(buckets, 140, '#f97316', true);
+  const scoreColor = R >= 65 ? '#22c55e' : R >= 45 ? '#f59e0b' : '#ef4444';
+
+  const bars = RADAR_AXES.map(({ key, label }) => {
+    const pct = Math.round((buckets[key] ?? 0) * 100);
+    const w   = RADAR_W[key];
+    const contribution = (pct / 100 * w).toFixed(1);
+    const bc  = pct >= 70 ? '#22c55e' : pct >= 40 ? '#f59e0b' : '#ef4444';
+    return `
+      <div>
+        <div style="display:flex;justify-content:space-between;margin-bottom:3px;">
+          <span style="font-size:11px;color:var(--muted);font-weight:600;">${label} <span style="color:${bc};font-size:10px;">${pct}%</span></span>
+          <span class="mono" style="font-size:10px;color:var(--muted);">+${contribution}/${w}</span>
+        </div>
+        <div style="height:4px;background:var(--elevated);border-radius:2px;overflow:hidden;">
+          <div style="height:100%;width:${pct}%;background:${bc};border-radius:2px;"></div>
+        </div>
+      </div>`;
+  }).join('');
+
+  return placeholder + `
+    <div style="display:flex;align-items:center;gap:20px;flex-wrap:wrap;">
+      <div style="flex-shrink:0;">${chart}</div>
+      <div style="flex:1;min-width:160px;">
+        <div style="margin-bottom:10px;">
+          <span class="mono" style="font-size:26px;font-weight:800;color:${scoreColor};">R=${R}</span>
+          <span style="font-size:11px;color:var(--muted);margin-left:6px;">/ 100</span>
+        </div>
+        <div style="display:flex;flex-direction:column;gap:6px;">${bars}</div>
+      </div>
+    </div>
+  </div>`;
+}
+
+async function loadDetailRadar(cgId, symbol) {
+  if (radarDetailCache.has(cgId)) {
+    if (selectedCgId === cgId) _patchDetailRadarSection(cgId);
+    return;
+  }
+
+  // Resolve Binance perp symbol
+  const candidates = [...binancePerpSymbolCandidates(symbol)];
+  let perpSym = null;
+  for (const c of candidates) {
+    try { const d = await fetchBinancePerpCandidate(c); if (d) { perpSym = c; break; } } catch {}
+  }
+  if (!perpSym) {
+    radarDetailCache.set(cgId, 'error');
+    if (selectedCgId === cgId) _patchDetailRadarSection(cgId);
+    return;
+  }
+  const spotSym = `${symbol.replace(/[^A-Z0-9]/gi,'').toUpperCase()}USDT`;
+
+  const [oiR, kl1dR, kl1hR, fundR, spotKlR, tkR, btcR, t1hR, t1dR, sentR_] = await Promise.allSettled([
+    fetchRadarOIHist(perpSym),
+    fetchRadarKlines(perpSym, '1d', 35),
+    fetchRadarKlines(perpSym, '1h', 13),
+    fetchRadarFundingHist(perpSym),
+    fetchRadarSpotKlines(spotSym),
+    fetchBinanceAllTicker(),
+    fetchBTCRefKlines(),
+    fetchApexData('technical', '1h'),
+    fetchApexData('technical', '1d'),
+    fetchApexData('sentiment'),
+  ]);
+
+  const oiHist    = oiR.status    === 'fulfilled' ? oiR.value    : [];
+  const klines1d  = kl1dR.status  === 'fulfilled' ? kl1dR.value  : [];
+  const klines1h  = kl1hR.status  === 'fulfilled' ? kl1hR.value  : [];
+  const funding   = fundR.status  === 'fulfilled' ? fundR.value  : [];
+  const spotKlines = spotKlR.status === 'fulfilled' ? spotKlR.value : [];
+  const allTk     = tkR.status    === 'fulfilled' ? tkR.value    : [];
+  const btcKlines = btcR.status   === 'fulfilled' ? btcR.value   : [];
+  const tech1hMap = t1hR.status   === 'fulfilled' ? t1hR.value   : {};
+  const tech1dMap = t1dR.status   === 'fulfilled' ? t1dR.value   : {};
+  const sentMap   = sentR_.status === 'fulfilled' ? sentR_.value : {};
+
+  const btcCloses = btcKlines.length > 1 ? btcKlines.slice(0,-1).map(k=>parseFloat(k[4])) : [];
+  const tkEntry   = allTk.find(t => t.symbol === perpSym);
+  const pctRaw    = tkEntry ? parseFloat(tkEntry.priceChangePercent) : NaN;
+  const dayChangeFrac = Number.isFinite(pctRaw) ? pctRaw / 100 : null;
+  const quoteVol  = tkEntry ? parseFloat(tkEntry.quoteVolume) : NaN;
+  const lastFR    = tkEntry ? parseFloat(tkEntry.lastFundingRate ?? NaN) : NaN;
+  const markPrice = tkEntry ? parseFloat(tkEntry.lastPrice || 0) : 0;
+
+  const att   = scoreRadarAtt(sentMap[symbol], tech1hMap[symbol], tech1dMap[symbol]);
+  const price = scoreRadarPrice(dayChangeFrac, klines1h, klines1d, btcCloses);
+  const vol   = scoreRadarVol(quoteVol, klines1d, spotKlines);
+  const oi    = scoreRadarOI(oiHist, markPrice, null);
+  const lev   = scoreRadarLev(funding, Number.isFinite(lastFR) ? lastFR : null);
+  const R     = computeRadarR({ att, price, vol, oi, lev });
+
+  radarDetailCache.set(cgId, { att, price, vol, oi, lev, R });
+  if (selectedCgId === cgId) _patchDetailRadarSection(cgId);
+}
+
+function _patchDetailRadarSection(cgId) {
+  const el = document.getElementById('detail-radar-section');
+  if (!el || el.dataset.cgid !== cgId) return;
+  const html = renderRadarDetailSection(cgId);
+  // Extract inner content between first > and last </div>
+  const wrapper = document.createElement('div');
+  wrapper.innerHTML = html;
+  const inner = wrapper.querySelector('#detail-radar-section');
+  if (inner) el.replaceWith(inner);
+}
+
+// ── Radar side-rail orchestration ─────────────────────────────────────────────
+
+async function loadListingRadar(force = false, options = {}) {
+  if (radarState.status === 'loading' || radarState.refreshing) return;
+  const previousState = radarState;
+  const hasDisplay = Array.isArray(previousState.tokens) && previousState.tokens.length > 0;
+  const lazy = Boolean(options.lazy && hasDisplay);
+
+  radarState = lazy
+    ? { ...previousState, refreshing: true, error: null }
+    : { status: 'loading', tokens: [], error: null, loadedAt: previousState.loadedAt || null, refreshing: false };
+  refreshSideRail();
+
+  try {
+    // Phase 1: all global sources in parallel
+    const [cmcR, spotListR, cgMktsR, btcKlR, allTkR, sentR, t1hR, t1dR] = await Promise.allSettled([
+      fetchCMCTrending(),
+      fetchBinanceSpotList(),
+      cgGet('/coins/markets?vs_currency=usd&order=market_cap_desc&per_page=250&page=1&sparkline=false'),
+      fetchBTCRefKlines(),
+      fetchBinanceAllTicker(),
+      fetchApexData('sentiment'),
+      fetchApexData('technical', '1h'),
+      fetchApexData('technical', '1d'),
+    ]);
+
+    const cmcTrend   = cmcR.status      === 'fulfilled' ? cmcR.value      : [];
+    const spotList   = spotListR.status === 'fulfilled' ? spotListR.value : [];
+    const cgMkts     = cgMktsR.status   === 'fulfilled' ? cgMktsR.value  : [];
+    const btcKlines  = btcKlR.status    === 'fulfilled' ? btcKlR.value   : [];
+    const allTk      = allTkR.status    === 'fulfilled' ? allTkR.value   : [];
+    const sentMap    = sentR.status     === 'fulfilled' ? sentR.value    : {};
+    const tech1hMap  = t1hR.status      === 'fulfilled' ? t1hR.value    : {};
+    const tech1dMap  = t1dR.status      === 'fulfilled' ? t1dR.value    : {};
+
+    const btcCloses = btcKlines.length > 1 ? btcKlines.slice(0,-1).map(k => parseFloat(k[4])) : [];
+
+    // ── CMC trending symbols ──────────────────────────────────────────────
+    const cmcSyms = new Set(cmcTrend
+      .map(item => normRadarSym(item.symbol || item.tokenSymbol || ''))
+      .filter(s => s && !isRadarExcluded(s)));
+    const cmcRankMap = {};
+    cmcTrend.forEach((item, i) => {
+      const sym = normRadarSym(item.symbol || item.tokenSymbol || '');
+      if (sym) cmcRankMap[sym] = item.listingRank ?? (i + 1);
+    });
+
+    // ── Binance spot active sets (top 100 each) ───────────────────────────
+    const spotItems = spotList
+      .filter(s => !s.legalMoney && s.baseAsset)
+      .map(s => ({
+        ...s, _base: normRadarSym(s.baseAsset),
+        _absDC: Math.abs(parseFloat(s.dayChange || 0)),
+        _dc:    parseFloat(s.dayChange || 0),
+        _vol:   parseFloat(s.volume || 0),
+      }))
+      .filter(s => s._base && !isRadarExcluded(s._base));
+
+    const N = 100;
+    const topMovers  = new Set([...spotItems].sort((a,b)=>b._absDC-a._absDC).slice(0,N).map(s=>s._base));
+    const topGainers = new Set([...spotItems].filter(s=>s._dc>=0).sort((a,b)=>b._dc-a._dc).slice(0,N).map(s=>s._base));
+    const topVol     = new Set([...spotItems].filter(s=>s._vol>=1e6).sort((a,b)=>b._vol-a._vol).slice(0,N).map(s=>s._base));
+
+    // ── Futures ticker lookup + futures top-100 ───────────────────────────
+    const tickerBySym = {};
+    const futAllSet   = new Set();
+    for (const t of allTk) {
+      const base = normRadarSym(t.symbol);
+      futAllSet.add(base);
+      if (!tickerBySym[base] || t.symbol.endsWith('USDT')) tickerBySym[base] = t;
+    }
+    const futTopSyms = new Set(
+      [...allTk]
+        .map(t => ({ base: normRadarSym(t.symbol), qv: parseFloat(t.quoteVolume || 0) }))
+        .filter(t => !isRadarExcluded(t.base))
+        .sort((a,b) => b.qv - a.qv).slice(0, N).map(t => t.base)
+    );
+
+    // ── MCap lookup (spot list primary, CG markets fallback) ──────────────
+    const mcapLookup = {};
+    for (const s of spotItems) {
+      const mc = parseFloat(s.marketCap || 0);
+      if (s._base && mc > 0) mcapLookup[s._base] = mc;
+    }
+    for (const item of cgMkts) {
+      const sym = normRadarSym(item.symbol || '');
+      const mc  = parseFloat(item.market_cap || 0);
+      if (sym && mc > 0 && !mcapLookup[sym]) mcapLookup[sym] = mc;
+    }
+
+    // ── Universe = CMC trending ∩ Binance active sets ─────────────────────
+    const binanceSyms = new Set([...topMovers, ...topGainers, ...topVol, ...futTopSyms]);
+    let candidates;
+    if (cmcSyms.size > 0) {
+      candidates = [...cmcSyms].filter(s => binanceSyms.has(s));
+    } else {
+      // CMC fetch failed — degrade to CG trending ∩ Binance active sets
+      const cgCoins = ((await cgGet('/search/trending').catch(()=>({}))).coins || []).map(r=>r.item).filter(Boolean);
+      candidates = cgCoins
+        .map(item => normRadarSym(item.symbol || ''))
+        .filter(s => s && binanceSyms.has(s) && !isRadarExcluded(s));
+    }
+
+    // ── Hard gates ────────────────────────────────────────────────────────
+    // Gate 1: must have active Binance USD-M futures
+    // Gate 2: MCap > $10M
+    const MCAP_MIN = 10_000_000;
+    const passing = candidates.filter(sym =>
+      futAllSet.has(sym) && (mcapLookup[sym] || 0) > MCAP_MIN
+    );
+
+    // Spot symbol lookup (for P/S ratio spot klines)
+    const spotSymLookup = {};
+    for (const s of spotItems) if (s._base) spotSymLookup[s._base] = s.symbol || `${s._base}USDT`;
+
+    // CG identity (thumb, name, cgId) for display
+    const cgState = trendingState.tokens || [];
+    const cgMeta  = Object.fromEntries(cgState.map(t => [normRadarSym(t.symbol), t]));
+
+    // Build per-candidate metadata
+    const candMeta = passing.map(sym => {
+      const tk   = tickerBySym[sym];
+      const sl   = spotItems.find(s => s._base === sym);
+      const cg   = cgMeta[sym];
+      return {
+        symbol:     sym,
+        cgId:       cg?.id || sym.toLowerCase(),
+        name:       cg?.name || sl?.fullName || sl?.name || sym,
+        thumb:      cg?.thumb || null,
+        rank:       cg?.rank  || null,
+        perpSym:    tk?.symbol    || `${sym}USDT`,
+        spotSym:    spotSymLookup[sym] || `${sym}USDT`,
+        // dayChange: priceChangePercent from perp (preferred), spot dayChange fallback
+        dayChangePct: parseFloat(tk?.priceChangePercent ?? sl?.dayChange ?? NaN),
+        quoteVol24h:  parseFloat(tk?.quoteVolume   || 0),
+        lastPrice:    parseFloat(tk?.lastPrice      || 0),
+        lastFR:       parseFloat(tk?.lastFundingRate ?? NaN),
+        marketCap:    mcapLookup[sym] || null,
+        alreadyListed: riseMarketsState.markets.some(m => m.symbol === sym),
+      };
+    });
+
+    if (!candMeta.length) {
+      radarState = { status: 'loaded', tokens: [], error: null, loadedAt: Date.now(), refreshing: false };
+      refreshSideRail();
+      return;
+    }
+
+    // ── Phase 2: per-symbol fetches (4-wide concurrency) ─────────────────
+    const scored = [];
+    const CONC = 4;
+    for (let i = 0; i < candMeta.length; i += CONC) {
+      const batch = candMeta.slice(i, i + CONC);
+      const results = await Promise.allSettled(batch.map(async t => {
+        const [oiR, kl1dR, kl1hR, fundR, spotKlR] = await Promise.allSettled([
+          fetchRadarOIHist(t.perpSym),
+          fetchRadarKlines(t.perpSym, '1d', 35),
+          fetchRadarKlines(t.perpSym, '1h', 13),
+          fetchRadarFundingHist(t.perpSym),
+          fetchRadarSpotKlines(t.spotSym),
+        ]);
+        const oiHist    = oiR.status    === 'fulfilled' ? oiR.value    : [];
+        const klines1d  = kl1dR.status  === 'fulfilled' ? kl1dR.value  : [];
+        const klines1h  = kl1hR.status  === 'fulfilled' ? kl1hR.value  : [];
+        const funding   = fundR.status  === 'fulfilled' ? fundR.value  : [];
+        const spotKlines = spotKlR.status === 'fulfilled' ? spotKlR.value : [];
+
+        // dayChange fraction: priceChangePercent is already a % string (e.g. "+20.43") → /100
+        const dayChangeFrac = Number.isFinite(t.dayChangePct) ? t.dayChangePct / 100 : null;
+
+        const attD   = scoreRadarAttDetail(sentMap[t.symbol], tech1hMap[t.symbol], tech1dMap[t.symbol]);
+        const priceD = scoreRadarPriceDetail(dayChangeFrac, klines1h, klines1d, btcCloses);
+        const volD   = scoreRadarVolDetail(t.quoteVol24h, klines1d, spotKlines);
+        const oiD    = scoreRadarOIDetail(oiHist, t.lastPrice, t.marketCap);
+        const levD   = scoreRadarLevDetail(funding, Number.isFinite(t.lastFR) ? t.lastFR : null);
+        const att   = attD.score;
+        const price = priceD.score;
+        const vol   = volD.score;
+        const oi    = oiD.score;
+        const lev   = levD.score;
+        const R     = computeRadarR({ att, price, vol, oi, lev });
+
+        const lastOICoins = oiHist.length ? parseFloat(oiHist[oiHist.length-1]?.sumOpenInterest || 0) : 0;
+        const oiUsd = lastOICoins * t.lastPrice;
+        return {
+          ...t, att, price, vol, oi, lev, R,
+          subs: { att: attD.subs, price: priceD.subs, vol: volD.subs, oi: oiD.subs, lev: levD.subs },
+          pct24h: t.dayChangePct, vol24h: t.quoteVol24h, oiUsd,
+        };
+      }));
+      for (const r of results) if (r.status === 'fulfilled') scored.push(r.value);
+    }
+
+    scored.sort((a, b) => b.R - a.R);
+    radarDisplayCount = RADAR_INITIAL_DISPLAY_COUNT;
+    radarState = { status: 'loaded', tokens: scored, error: null, loadedAt: Date.now(), refreshing: false };
+    rerenderSelectedRadarAnalysis();
+  } catch (err) {
+    radarState = lazy
+      ? { ...previousState, refreshing: false, error: null }
+      : { status: 'error', tokens: [], error: errMsg(err), loadedAt: null, refreshing: false };
+  }
+  refreshSideRail();
+}
+
+function retryListingRadar() { loadListingRadar(true, { lazy: true }); }
+function radarLoadMore() {
+  radarDisplayCount = Math.min(radarDisplayCount + 10, RADAR_MAX_DISPLAY_COUNT);
+  refreshSideRail();
+}
+
+function scheduleListingRadarRefresh() {
+  if (radarRefreshTimer) clearTimeout(radarRefreshTimer);
+  radarRefreshTimer = setTimeout(runListingRadarRefresh, RADAR_REFRESH_MS);
+}
+
+async function runListingRadarRefresh() {
+  try {
+    await loadListingRadar(true, { lazy: true });
+  } finally {
+    scheduleListingRadarRefresh();
+  }
+}
+
+function findRadarToken(symbol) {
+  const sym = String(symbol || '').toUpperCase();
+  return (radarState.tokens || []).find(t => String(t.symbol || '').toUpperCase() === sym) || null;
+}
+
+function radarScoreColor(R) {
+  return R >= 65 ? 'var(--green)' : R >= 45 ? 'var(--yellow)' : 'var(--red)';
+}
+
+function radarSignalRows(t) {
+  const oiMcap = t.marketCap && t.oiUsd ? t.oiUsd / t.marketCap : null;
+  return [
+    ['Binance Perp', t.perpSym || '—'],
+    ['Price', t.lastPrice > 0 ? fmtPrice(t.lastPrice) : '—'],
+    ['24h Price', Number.isFinite(t.pct24h) ? (t.pct24h >= 0 ? '+' : '') + t.pct24h.toFixed(2) + '%' : '—'],
+    ['Perp Vol 24h', t.vol24h > 0 ? fmtBig(t.vol24h) : '—'],
+    ['Open Interest', t.oiUsd > 0 ? fmtBig(t.oiUsd) : '—'],
+    ['Market Cap', t.marketCap > 0 ? fmtBig(t.marketCap) : '—'],
+    ['OI / MCap', oiMcap !== null ? fmtPct(oiMcap) : '—'],
+    ['Funding', Number.isFinite(t.lastFR) ? fmtFunding(t.lastFR) : '—'],
+    ['RISEx Status', t.alreadyListed ? 'Already listed' : 'Not listed'],
+  ];
+}
+
+function renderRadarAnalysis(t) {
+  selectedRadarSymbol = t.symbol;
+  selectedCgId = null;
+  renderTokenList();
+
+  const panel = document.getElementById('detail-panel');
+  const color = avatarColor(t.symbol);
+  const Rcolor = radarScoreColor(t.R);
+  const buckets = { att: t.att, price: t.price, vol: t.vol, oi: t.oi, lev: t.lev };
+  const chart = svgRadarChart(buckets, 180, '#f97316', true);
+  const rank = radarState.tokens.indexOf(t);
+
+  const BCOLS = 'minmax(126px,1fr) 62px 82px 88px minmax(170px,1.35fr) 28px';
+  const SCOLS = 'minmax(126px,1fr) 58px 64px minmax(82px,0.8fr) minmax(150px,1.25fr) 28px';
+  const bucketRows = RADAR_AXES.map(({ key, label }) => {
+    const pct = Math.round((buckets[key] ?? 0) * 100);
+    const weight = RADAR_W[key];
+    const contribution = (pct / 100 * weight).toFixed(1);
+    const bc = pct >= 70 ? 'var(--green)' : pct >= 40 ? 'var(--yellow)' : 'var(--red)';
+    const detail = RADAR_BUCKET_DETAILS[key] || {};
+
+    const items = t.subs?.[key] || [];
+    const subRowsHtml = items.length ? items.map(s => {
+      const spct = fmtRadarSubScore(s.score);
+      const sbc = !Number.isFinite(s.score) ? 'var(--muted)'
+        : s.score >= 0.70 ? 'var(--green)' : s.score >= 0.40 ? 'var(--yellow)' : 'var(--red)';
+      return `
+        <div style="display:grid;grid-template-columns:${SCOLS};gap:10px;align-items:center;padding:9px 14px;border-bottom:1px solid rgba(255,255,255,0.04);background:#0a0c10;">
+          <div style="font-size:11px;font-weight:700;color:var(--muted);padding-left:10px;">${esc(s.label)}</div>
+          <div class="mono" style="font-size:11px;color:var(--muted);text-align:right;">${Number.isFinite(s.weight) ? s.weight.toFixed(2) : '—'}</div>
+          <div class="mono" style="font-size:11px;font-weight:900;color:${sbc};text-align:right;">${spct}</div>
+          <div class="mono" style="font-size:10px;color:var(--text);text-align:right;word-break:break-word;">${esc(s.raw)}</div>
+          <div style="font-size:10px;color:var(--muted);line-height:1.4;">${esc(s.note)}</div>
+          <div></div>
+        </div>`;
+    }).join('') : `<div style="padding:10px 14px;color:var(--muted);font-size:11px;background:#0a0c10;">No sub-score data.</div>`;
+
+    return `
+      <div>
+        <div style="display:grid;grid-template-columns:${BCOLS};gap:12px;align-items:center;padding:12px 14px;border-bottom:1px solid var(--border);cursor:pointer;" onclick="toggleBucketInline(this)">
+          <div>
+            <div style="font-size:13px;font-weight:800;color:var(--text);">${esc(detail.title || label)}</div>
+            <div style="font-size:10px;color:var(--muted);margin-top:2px;">${esc(label)}</div>
+          </div>
+          <div class="mono" style="font-size:12px;font-weight:800;color:var(--muted);text-align:right;">${weight}</div>
+          <div>
+            <div style="height:6px;background:var(--elevated);border-radius:3px;overflow:hidden;">
+              <div style="height:100%;width:${pct}%;background:${bc};border-radius:3px;"></div>
+            </div>
+            <div class="mono" style="font-size:10px;color:${bc};font-weight:800;text-align:right;margin-top:4px;">${pct}</div>
+          </div>
+          <div class="mono" style="font-size:13px;font-weight:900;color:${bc};text-align:right;">+${contribution}</div>
+          <div style="font-size:11px;color:var(--muted);line-height:1.4;">${esc(detail.method || '—')}</div>
+          <div style="display:flex;align-items:center;justify-content:center;">
+            <svg class="bucket-chevron" width="13" height="13" fill="none" stroke="currentColor" viewBox="0 0 24 24" style="transition:transform 0.15s;color:var(--muted);flex-shrink:0;"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M9 18l6-6-6-6"/></svg>
+          </div>
+        </div>
+        <div class="bucket-sub-rows" style="display:none;border-bottom:1px solid var(--border);">
+          <div style="display:grid;grid-template-columns:${SCOLS};gap:10px;padding:7px 14px;background:#0a0c10;border-bottom:1px solid rgba(255,255,255,0.06);">
+            ${['Metric','Weight','Score','Raw','Method',''].map((h,i) => `<div style="font-size:9px;font-weight:900;color:var(--muted);letter-spacing:0.5px;text-transform:uppercase;${i>0&&i<4?'text-align:right;':''}">${h}</div>`).join('')}
+          </div>
+          ${subRowsHtml}
+        </div>
+      </div>`;
+  }).join('');
+
+
+  const signalRows = radarSignalRows(t).map(([label, value]) => `
+    <div style="background:#0e1016;border:1px solid var(--border);border-radius:8px;padding:10px 12px;">
+      <div style="font-size:9px;color:var(--muted);font-weight:800;letter-spacing:0.45px;margin-bottom:4px;text-transform:uppercase;">${esc(label)}</div>
+      <div class="mono" style="font-size:13px;font-weight:800;color:var(--text);word-break:break-word;">${esc(value)}</div>
+    </div>`).join('');
+
+  const runEval = `screenTrendingToken(${jsStr(t.cgId)},${jsStr(t.symbol)},${t.rank || 'null'})`;
+  panel.innerHTML = `
+    <div style="max-width:900px;">
+      <div class="detail-header">
+        <div class="detail-avatar">
+          ${t.thumb
+            ? `<img src="${esc(t.thumb)}" alt="" style="width:52px;height:52px;border-radius:12px;object-fit:cover;" onerror="this.style.display='none'" />`
+            : `<div style="width:52px;height:52px;border-radius:12px;background:${color}20;border:1px solid ${color}40;display:flex;align-items:center;justify-content:center;font-size:20px;font-weight:900;color:${color};">${esc(t.symbol[0] || '?')}</div>`}
+        </div>
+        <div class="detail-identity">
+          <div class="detail-title-line">
+            <h1>${esc(t.symbol)}</h1>
+            <span style="font-size:10px;font-weight:900;padding:4px 8px;border-radius:6px;background:rgba(249,115,22,0.12);color:var(--orange);border:1px solid rgba(249,115,22,0.35);letter-spacing:0.5px;">RADAR</span>
+          </div>
+          <div class="detail-subline">${esc(t.name || t.symbol)} · Radar Scoring Result · discovery signal, not listing approval</div>
+        </div>
+        <div class="detail-actions">
+          <button class="export-btn" onclick="${esc(runEval)}" title="Run listing tier evaluation">Run Listing Evaluation</button>
+        </div>
+        <div class="detail-stats">
+          <div class="detail-stat-card">
+            <div class="detail-stat-label">RADAR SCORE</div>
+            <div class="detail-stat-value mono" style="color:${Rcolor};">R=${esc(t.R)}</div>
+          </div>
+          <div class="detail-stat-card">
+            <div class="detail-stat-label">CANDIDATE RANK</div>
+            <div class="detail-stat-value mono">${rank >= 0 ? '#' + (rank + 1) : '—'}</div>
+          </div>
+          <div class="detail-stat-card">
+            <div class="detail-stat-label">UNIVERSE</div>
+            <div class="detail-stat-value mono">${esc(t.alreadyListed ? 'LIVE' : 'REVIEW')}</div>
+          </div>
+        </div>
+      </div>
+
+      <div style="background:var(--surface);border:1px solid rgba(249,115,22,0.35);border-radius:12px;padding:20px 24px;margin-bottom:20px;">
+        <div style="display:flex;align-items:flex-start;gap:24px;flex-wrap:wrap;">
+          <div style="flex-shrink:0;">${chart}</div>
+          <div style="flex:1;min-width:260px;">
+            <div style="font-size:11px;font-weight:900;color:var(--orange);letter-spacing:0.7px;text-transform:uppercase;margin-bottom:8px;">Scoring Formula</div>
+            <div class="mono" style="font-size:13px;color:#fed7aa;background:#0e1016;border:1px solid var(--border);border-radius:8px;padding:12px 14px;line-height:1.7;">
+              R = 20*S_att + 15*S_price + 25*S_vol + 25*S_OI + 15*S_lev
+            </div>
+            <p style="font-size:12px;color:var(--muted);line-height:1.55;margin:12px 0 0;">
+              High radar scores mean the asset is worth reviewing soon. This view mirrors the upstream radar notebook; it does not assign listing tier, leverage, or safety approval.
+            </p>
+          </div>
+        </div>
+      </div>
+
+      <div style="margin-bottom:20px;">
+        <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:12px;">
+          <h2 style="font-size:14px;font-weight:800;color:var(--text);margin:0;">BUCKET CONTRIBUTIONS</h2>
+          <span style="font-size:11px;color:var(--muted);">Scores shown as 0-100 bucket strength</span>
+        </div>
+        <div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;overflow:auto;">
+          <div style="min-width:760px;">
+            <div style="display:grid;grid-template-columns:minmax(126px,1fr) 62px 82px 88px minmax(170px,1.35fr) 28px;gap:12px;padding:10px 14px;border-bottom:1px solid var(--border);">
+              ${['Bucket','Weight','Score','R Pts','Sub-components',''].map((h, i) => `<div style="font-size:9px;font-weight:900;color:var(--muted);letter-spacing:0.5px;text-transform:uppercase;${i > 0 && i < 4 ? 'text-align:right;' : ''}">${h}</div>`).join('')}
+            </div>
+            ${bucketRows}
+          </div>
+        </div>
+      </div>
+
+      <div>
+        <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:12px;">
+          <h2 style="font-size:14px;font-weight:800;color:var(--text);margin:0;">CONTEXTUAL SIGNALS</h2>
+          <span style="font-size:11px;color:var(--muted);">Displayed for interpretation, not all fields are direct score inputs</span>
+        </div>
+        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;">
+          ${signalRows}
+        </div>
+      </div>
+    </div>`;
+}
+
+function openRadarAnalysis(symbol) {
+  const t = findRadarToken(symbol);
+  if (t) renderRadarAnalysis(t);
+}
+
+function rerenderSelectedRadarAnalysis() {
+  if (!selectedRadarSymbol) return;
+  const t = findRadarToken(selectedRadarSymbol);
+  if (t) renderRadarAnalysis(t);
+}
+
+function toggleBucketInline(row) {
+  const sub = row.nextElementSibling;
+  const chevron = row.querySelector('.bucket-chevron');
+  if (!sub) return;
+  const open = sub.style.display !== 'none';
+  sub.style.display = open ? 'none' : 'block';
+  if (chevron) chevron.style.transform = open ? '' : 'rotate(90deg)';
+}
+
+let expandedRadarSymbol = null;
+
+function toggleRadarToken(symbol) {
+  expandedRadarSymbol = expandedRadarSymbol === symbol ? null : symbol;
+  refreshSideRail();
+}
+
+// ── Radar side-rail render ────────────────────────────────────────────────────
+
+function renderListingRadarSection() {
+  const st = radarState;
+  const radarBusy = st.status === 'loading' || st.refreshing;
+  const refreshBtn = `
+    <button class="icon-btn" onclick="retryListingRadar()" ${radarBusy ? 'disabled' : ''}
+      title="${radarBusy ? 'Refreshing radar' : 'Refresh listing radar'}"
+      aria-label="${radarBusy ? 'Refreshing radar' : 'Refresh listing radar'}">
+      ${radarBusy
+        ? '<span class="spinner-sm"></span>'
+        : '<svg width="15" height="15" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a9 9 0 00-15.74-5.74L3 8"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 3v5h5"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 12a9 9 0 0015.74 5.74L21 16"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M16 16h5v5"/></svg>'}
+    </button>`;
+
+  if (st.status === 'idle' || st.status === 'loading') {
+    return renderRailCard('Listing Radar', 'CMC trending × Binance active sets', refreshBtn, `
+      <div style="display:flex;align-items:center;gap:10px;color:var(--muted);font-size:12px;padding:8px 0;">
+        <span class="spinner-sm"></span><span>${st.status === 'idle' ? 'Starting radar…' : 'Fetching signals…'}</span>
+      </div>`, 'spotlight');
+  }
+  if (st.status === 'error') {
+    return renderRailCard('Listing Radar', 'Signal computation failed', refreshBtn, `
+      <div style="font-size:12px;color:var(--red);line-height:1.45;">${esc(st.error || 'Unavailable')}</div>`, 'spotlight');
+  }
+  if (!st.tokens.length) {
+    return renderRailCard('Listing Radar', 'No universe candidates', refreshBtn, `
+      <div style="font-size:12px;color:var(--muted);">No CoinGecko trending tokens found with Binance perps.</div>`, 'spotlight');
+  }
+
+  const totalCount = st.tokens.length;
+  const visibleCount = Math.min(radarDisplayCount, totalCount);
+  const subtitle = `${visibleCount} of ${totalCount} candidates${st.refreshing ? ' · refreshing' : ''}`;
+
+  // Column header
+  const header = `
+    <div class="radar-row-grid" style="padding:7px 12px 7px 8px;border-bottom:1px solid var(--border);">
+      <div></div>
+      <div style="font-size:9px;font-weight:800;color:var(--muted);letter-spacing:0.45px;">TOKEN</div>
+      <div style="font-size:9px;font-weight:800;color:var(--muted);letter-spacing:0.45px;text-align:right;">PRICE</div>
+      <div style="font-size:9px;font-weight:800;color:var(--muted);letter-spacing:0.45px;text-align:right;">24H</div>
+      <div style="font-size:9px;font-weight:800;color:var(--muted);letter-spacing:0.45px;text-align:right;">PERP VOL</div>
+      <div style="font-size:9px;font-weight:800;color:var(--muted);letter-spacing:0.45px;text-align:right;">OI</div>
+    </div>`;
+
+  const rows = st.tokens.slice(0, visibleCount).map(t => {
+    const expanded = expandedRadarSymbol === t.symbol;
+    const color    = avatarColor(t.symbol);
+    const avatar   = t.thumb
+      ? `<img src="${esc(t.thumb)}" alt="" style="width:26px;height:26px;border-radius:7px;object-fit:cover;flex-shrink:0;" onerror="this.style.display='none'" />`
+      : `<span style="width:26px;height:26px;border-radius:7px;background:${color}20;border:1px solid ${color}40;display:inline-flex;align-items:center;justify-content:center;font-size:10px;font-weight:800;color:${color};flex-shrink:0;">${esc(t.symbol[0] || '?')}</span>`;
+
+    const Rcolor  = t.R >= 65 ? 'var(--green)' : t.R >= 45 ? 'var(--yellow)' : 'var(--red)';
+    const pc      = t.pct24h;
+    const pcFmt   = Number.isFinite(pc) ? (pc >= 0 ? '+' : '') + pc.toFixed(2) + '%' : '—';
+    const pcColor = !Number.isFinite(pc) ? 'var(--muted)' : pc >= 0 ? 'var(--green)' : 'var(--red)';
+    const priceFmt = t.lastPrice > 0 ? fmtPrice(t.lastPrice) : '—';
+    const volFmt   = t.vol24h > 0 ? fmtBig(t.vol24h) : '—';
+    const oiFmt    = t.oiUsd  > 0 ? fmtBig(t.oiUsd)  : '—';
+
+    // Collapsed row
+    const row = `
+      <div class="radar-row-grid radar-row" style="min-height:44px;">
+        <button onclick="toggleRadarToken('${esc(t.symbol)}')"
+          aria-label="${expanded ? 'Collapse' : 'Expand'} ${esc(t.symbol)}"
+          style="width:22px;height:44px;display:flex;align-items:center;justify-content:center;background:transparent;border:none;color:var(--muted);cursor:pointer;padding:0;">
+          <svg width="12" height="12" fill="none" stroke="currentColor" viewBox="0 0 24 24"
+            style="transform:rotate(${expanded ? 90 : 0}deg);transition:transform 0.18s;">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.2" d="M9 6l6 6-6 6"/>
+          </svg>
+        </button>
+        <button onclick="screenTrendingToken('${esc(t.cgId)}','${esc(t.symbol)}',${t.rank || 'null'})"
+          style="min-width:0;text-align:left;background:transparent;border:none;padding:8px 0;cursor:pointer;display:flex;align-items:center;gap:7px;">
+          ${avatar}
+          <div style="min-width:0;">
+            <div style="display:flex;align-items:center;gap:5px;">
+              <span style="font-size:12px;font-weight:800;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${esc(t.symbol)}</span>
+              <span class="mono" style="font-size:10px;font-weight:700;color:${Rcolor};">R=${t.R}</span>
+            </div>
+            <div style="font-size:10px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${esc(t.name)}</div>
+          </div>
+        </button>
+        <div class="mono" style="font-size:11px;font-weight:700;color:var(--text);text-align:right;white-space:nowrap;">${priceFmt}</div>
+        <div class="mono" style="font-size:11px;font-weight:700;color:${pcColor};text-align:right;white-space:nowrap;">${pcFmt}</div>
+        <div class="mono" style="font-size:11px;font-weight:700;color:var(--muted);text-align:right;white-space:nowrap;">${volFmt}</div>
+        <div class="mono" style="font-size:11px;font-weight:700;color:var(--muted);text-align:right;white-space:nowrap;">${oiFmt}</div>
+      </div>`;
+
+    if (!expanded) return row;
+
+    // Expanded detail panel
+    const chart = svgRadarChart({ att: t.att, price: t.price, vol: t.vol, oi: t.oi, lev: t.lev }, 100, '#f97316', true);
+    const bars  = RADAR_AXES.map(({ key, label }) => {
+      const pct = Math.round((t[key] ?? 0) * 100);
+      const bc  = pct >= 70 ? 'var(--green)' : pct >= 40 ? 'var(--yellow)' : 'var(--red)';
+      return `
+        <div style="display:grid;grid-template-columns:72px 1fr 28px;align-items:center;gap:8px;">
+          <span style="font-size:11px;color:var(--muted);white-space:nowrap;">${label}</span>
+          <div style="height:5px;background:var(--elevated);border-radius:3px;overflow:hidden;">
+            <div style="height:100%;width:${pct}%;background:${bc};border-radius:3px;"></div>
+          </div>
+          <span class="mono" style="font-size:11px;font-weight:700;color:${bc};text-align:right;">${pct}</span>
+        </div>`;
+    }).join('');
+
+    const detail = `
+      <div style="padding:12px 12px 14px 8px;border-bottom:1px solid var(--border);background:rgba(249,115,22,0.03);">
+        <div style="display:flex;align-items:flex-start;gap:14px;">
+          <div style="flex-shrink:0;padding-top:4px;">${chart}</div>
+          <div style="flex:1;display:flex;flex-direction:column;gap:7px;">
+            <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:2px;">
+              <span style="font-size:10px;color:var(--muted);font-weight:600;letter-spacing:0.4px;">BUCKET SCORES (0–100)</span>
+              <span class="mono" style="font-size:11px;font-weight:800;color:${Rcolor};">R = ${t.R}</span>
+            </div>
+            ${bars}
+          </div>
+        </div>
+        <div style="margin-top:12px;display:flex;justify-content:flex-end;">
+          <button onclick="${esc(`openRadarAnalysis(${jsStr(t.symbol)})`)}"
+            style="background:rgba(249,115,22,0.12);border:1px solid rgba(249,115,22,0.35);color:var(--orange);font-size:11px;font-weight:700;padding:5px 14px;border-radius:6px;cursor:pointer;letter-spacing:0.3px;">
+            Full Analysis →
+          </button>
+        </div>
+      </div>`;
+
+    return row + detail;
+  }).join('');
+
+  const canLoadMore = visibleCount < totalCount && visibleCount < RADAR_MAX_DISPLAY_COUNT;
+  const loadMoreBtn = canLoadMore ? `
+    <div style="padding:10px;text-align:center;border-top:1px solid var(--border);">
+      <button onclick="radarLoadMore()" style="background:transparent;border:1px solid var(--border);color:var(--muted);font-size:11px;font-weight:700;padding:5px 20px;border-radius:6px;cursor:pointer;letter-spacing:0.3px;">
+        Load more (${Math.min(totalCount, RADAR_MAX_DISPLAY_COUNT) - visibleCount} remaining)
+      </button>
+    </div>` : '';
+
+  const body = `<div style="background:#0e1016;border:1px solid var(--border);border-radius:10px;overflow:hidden;">
+    ${header}${rows}${loadMoreBtn}
+  </div>`;
+
+  return renderRailCard('Listing Radar', subtitle, refreshBtn, body, 'spotlight');
+}
+
 // ─── SEARCH ───────────────────────────────────────────────────────────────────
 let _searchTimer = null;
 document.getElementById('search-input').addEventListener('input', e => {
@@ -3368,13 +4698,23 @@ function screenTrendingToken(id, symbol, rank = null) {
   );
 }
 
-function renderRailCard(title, subtitle, action, body) {
+function renderRailCard(title, subtitle, action, body, variant = '') {
+  const spotlight = variant === 'spotlight';
+  const shellStyle = spotlight
+    ? 'background:linear-gradient(180deg,rgba(249,115,22,0.13),rgba(18,20,26,0.98) 34%);border:1px solid rgba(249,115,22,0.45);border-radius:12px;padding:18px;margin-bottom:14px;box-shadow:0 18px 48px rgba(0,0,0,0.34),0 0 0 1px rgba(249,115,22,0.10) inset;'
+    : 'background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:16px;margin-bottom:14px;';
+  const titleStyle = spotlight
+    ? 'font-size:12px;font-weight:900;color:var(--text);letter-spacing:0.7px;text-transform:uppercase;'
+    : 'font-size:11px;font-weight:800;color:var(--text);letter-spacing:0.5px;text-transform:uppercase;';
+  const subtitleStyle = spotlight
+    ? 'font-size:11px;color:#fed7aa;margin-top:4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-weight:700;'
+    : 'font-size:10px;color:var(--muted);margin-top:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;';
   return `
-    <section style="background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:16px;margin-bottom:14px;">
+    <section style="${shellStyle}">
       <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:12px;">
         <div style="min-width:0;">
-          <div style="font-size:11px;font-weight:800;color:var(--text);letter-spacing:0.5px;text-transform:uppercase;">${title}</div>
-          ${subtitle ? `<div style="font-size:10px;color:var(--muted);margin-top:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${subtitle}</div>` : ''}
+          <div style="${titleStyle}">${title}</div>
+          ${subtitle ? `<div style="${subtitleStyle}">${subtitle}</div>` : ''}
         </div>
         ${action || ''}
       </div>
@@ -3522,8 +4862,8 @@ function renderTrendingTokensSection() {
 
 function renderSideRail() {
   return `
+    ${renderListingRadarSection()}
     ${renderRailRiseMarkets()}
-    ${renderTrendingTokensSection()}
   `;
 }
 
@@ -3610,6 +4950,7 @@ function renderRiseMarketsSection() {
 
 // ─── RENDER: welcome ──────────────────────────────────────────────────────────
 function renderWelcome() {
+  selectedRadarSymbol = null;
   document.getElementById('detail-panel').innerHTML = `
     <div style="max-width:900px;">
       <div style="margin-bottom:32px;">
@@ -3989,6 +5330,20 @@ function renderDetail(r) {
       </div>
     `;
 
+    // Radar profile section (populated async by loadDetailRadar)
+    html += `
+      <div style="margin-bottom:20px;">
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:14px;">
+          <svg width="16" height="16" fill="none" stroke="var(--orange)" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11.049 2.927c.3-.921 1.603-.921 1.902 0l1.519 4.674a1 1 0 00.95.69h4.915c.969 0 1.371 1.24.588 1.81l-3.976 2.888a1 1 0 00-.363 1.118l1.518 4.674c.3.922-.755 1.688-1.538 1.118l-3.976-2.888a1 1 0 00-1.176 0l-3.976 2.888c-.783.57-1.838-.197-1.538-1.118l1.518-4.674a1 1 0 00-.363-1.118l-3.976-2.888c-.783-.57-.38-1.81.588-1.81h4.914a1 1 0 00.951-.69l1.519-4.674z"/></svg>
+          <h2 style="font-size:14px;font-weight:700;color:var(--text);margin:0;">RADAR PROFILE</h2>
+          <span style="font-size:11px;color:var(--muted);">5-bucket signal score · R ∈ [0, 100]</span>
+        </div>
+        <div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:20px 24px;">
+          ${renderRadarDetailSection(r.cgId)}
+        </div>
+      </div>
+    `;
+
     html += renderSuggestedListingConfig(r, sc);
 
     html += `<div id="exchange-ref-section">${renderExchangeReferenceSection(r.symbol)}</div>`;
@@ -4127,6 +5482,7 @@ function retrySelected() {
 
 async function selectToken(cgId, symbol, safetyScore, feedGrade, cmcId = null) {
   const runId = ++_activeAnalysisRun;
+  selectedRadarSymbol = null;
   _activeAnalysisCgId = cgId;
   _lastSelectedCgId = cgId;
   _lastSelectedSymbol = symbol;
@@ -4148,6 +5504,7 @@ async function selectToken(cgId, symbol, safetyScore, feedGrade, cmcId = null) {
   if (resultCache.has(cgId)) {
     if (runId === _activeAnalysisRun) _activeAnalysisCgId = null;
     renderDetail(resultCache.get(cgId));
+    loadDetailRadar(cgId, symbol);
     return;
   }
 
@@ -4161,6 +5518,7 @@ async function selectToken(cgId, symbol, safetyScore, feedGrade, cmcId = null) {
     if (result) {
       renderDetail(result);
       renderTokenList(); // refresh scores in left panel
+      loadDetailRadar(cgId, symbol);
     }
   } catch (err) {
     if (runId !== _activeAnalysisRun || selectedCgId !== cgId) return;
@@ -4239,6 +5597,8 @@ async function loadTopCoins() {
   loadRiseMarkets();
   loadTrendingTokens();
   loadTopCoins();
+  loadListingRadar();
+  scheduleListingRadarRefresh();
   scheduleAutoRefresh();
 })();
 </script>

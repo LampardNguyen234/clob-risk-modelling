@@ -61,6 +61,9 @@ BINANCE_SPOT_KLINES_URL = f"{_SPOT}/api/v3/klines"
 _BAPI                   = "https://www.binance.com"
 BINANCE_SPOT_LIST_URL   = f"{_BAPI}/bapi/composite/v1/public/marketing/symbol/list"
 BINANCE_APEX_URL        = f"{_BAPI}/bapi/apex/v1/friendly/apex/web/opportunity/assets"
+BINANCE_APEX_DETAIL_URL = f"{_BAPI}/bapi/apex/v1/friendly/apex/web/opportunity/asset-details"
+BINANCE_ALPHA_TICKER_URL  = f"{_BAPI}/bapi/defi/v1/public/alpha-trade/aggTicker24"
+BINANCE_ALPHA_KLINES_URL  = f"{_BAPI}/bapi/defi/v1/public/alpha-trade/agg-klines"
 
 CMC_TRENDING_URL        = "https://api.coinmarketcap.com/data-api/v3/unified-trending/listing"
 CG_TRENDING_URL         = "https://api.coingecko.com/api/v3/search/trending"
@@ -80,6 +83,9 @@ _TTL: dict[str, int] = {
     "binance_technical":      300,
     "binance_technical_1h":   300,
     "binance_technical_1d":   300,
+    "binance_alpha_ticker":   300,
+    "binance_alpha_klines":   3600,
+    "binance_alpha_sentiment": 300,
     "cmc_trending":           600,
     "cg_trending":            600,
     "cg_markets":             600,
@@ -459,6 +465,208 @@ def fetch_binance_technical(session: requests.Session | None = None,
 
     _save_cache(result, key)
     return result
+
+
+def fetch_binance_alpha_ticker(session: requests.Session | None = None,
+                               refresh: bool = False) -> dict[str, dict]:
+    """
+    Return Binance Alpha token records keyed by SYMBOL (e.g. "VELVET").
+
+    Apex sentiment/technical endpoints do not cover Alpha tokens at all — they only
+    return regular spot tokens. For Alpha tokens the only available attention proxy
+    is the `score` field from this endpoint (0–max, rank-based). The notebook uses
+    `score` to compute s_att for Alpha tokens instead of the Apex signals.
+
+    Each value dict:
+      addr_key  — "0xCONTRACTADDRESS@CHAINID" (for Apex key remapping if ever needed)
+      marketCap — used as MCap fallback (Alpha tokens absent from binance_spot_list)
+      volume24h — DEX volume in USD, used as spot-side proxy for P/S ratio
+      score     — Binance ranking score [0, 111]; use percentile rank for normalisation
+      fdv, price, alphaId, chainId — contextual
+    """
+    key = "binance_alpha_ticker"
+    if not refresh:
+        cached = _load_cache(key, _TTL[key])
+        if cached is not None:
+            return cached
+
+    session = session or _make_session()
+    result: dict[str, dict] = {}
+    try:
+        resp = _get_with_retry(
+            session, BINANCE_ALPHA_TICKER_URL,
+            params={"dataType": "aggregate"},
+        )
+        items = resp.json().get("data", [])
+        if not isinstance(items, list):
+            items = []
+        for item in items:
+            addr  = item.get("contractAddress", "")
+            chain = item.get("chainId", "")
+            sym   = item.get("symbol", "")
+            if not (addr and chain and sym):
+                continue
+            result[sym] = {
+                # addr_key matches the Apex asset field format ("0x...@chainId") for
+                # remapping if Apex ever starts returning Alpha tokens in bulk
+                "addr_key":  f"{addr}@{chain}",
+                "name":      item.get("name", ""),
+                "marketCap": _safe_float(item.get("marketCap")),
+                "fdv":       _safe_float(item.get("fdv")),
+                "price":     _safe_float(item.get("price")),
+                # volume24h in USD — spot-volume proxy for P/S ratio (Alpha tokens
+                # have no regular Binance spot market and no spot klines)
+                "volume24h": _safe_float(item.get("volume24h")),
+                # score: Binance's composite ranking for this Alpha token (0–111).
+                # Used as the s_att proxy when Apex sentiment/technical are unavailable.
+                "score":     item.get("score"),
+                "alphaId":   item.get("alphaId", ""),
+                "chainId":   chain,
+            }
+    except Exception as exc:
+        warnings.warn(
+            f"fetch_binance_alpha_ticker failed ({exc}); "
+            "Alpha token attention scores will be 0 and MCap fallback unavailable"
+        )
+
+    _save_cache(result, key)
+    return result
+
+
+def fetch_binance_alpha_sentiment(addr_key: str,
+                                  session: requests.Session | None = None,
+                                  refresh: bool = False) -> dict[str, float]:
+    """
+    Fetch Apex AI sentiment for a single Alpha token via the per-asset endpoint.
+
+    addr_key — "0xCONTRACTADDRESS@CHAINID" (stored in alpha_ticker value["addr_key"]).
+    Returns a flat dict of floats with the same keys as fetch_binance_sentiment entries:
+      {sentiment_score, sentiment_score_kol, sentiment_24h_social_volume,
+       sentiment_score_social, sentiment_score_news}
+    Returns {} on any failure or if the endpoint returns no data.
+
+    The bulk Apex endpoint (/opportunity/assets) never returns Alpha tokens; this
+    per-asset endpoint is the only way to get sentiment for them.
+    Technical scores (type=technical) return data=null for Alpha tokens — only
+    sentiment is available here.
+    """
+    # Cache key: replace special chars so it works as a filename stem.
+    safe_key = addr_key.replace("0x", "").replace("@", "_")
+    cache_key = f"binance_alpha_sentiment_{safe_key}"
+    if not refresh:
+        cached = _load_cache(cache_key, _TTL["binance_alpha_sentiment"])
+        if cached is not None:
+            return cached
+
+    session = session or _make_session()
+    result: dict[str, float] = {}
+    _SENTIMENT_KEYS = {
+        "sentiment_score",
+        "sentiment_score_kol",
+        "sentiment_24h_social_volume",
+        "sentiment_score_social",
+        "sentiment_score_news",
+    }
+    try:
+        resp = _get_with_retry(
+            session, BINANCE_APEX_DETAIL_URL,
+            params={"asset": addr_key, "type": "sentiment", "interval": "1h", "quote": "USDT"},
+        )
+        data    = resp.json().get("data") or {}
+        metrics = data.get("metrics", {})
+        for k in _SENTIMENT_KEYS:
+            if k in metrics:
+                try:
+                    result[k] = float(metrics[k]["value"])
+                except (KeyError, TypeError, ValueError):
+                    pass
+    except Exception as exc:
+        warnings.warn(f"fetch_binance_alpha_sentiment({addr_key}): {exc}")
+
+    _save_cache(result, cache_key)
+    return result
+
+
+def _safe_float(val) -> float | None:
+    try:
+        return float(val)
+    except (TypeError, ValueError):
+        return None
+
+
+def _normalize_alpha_kline(k: list) -> list:
+    """
+    Pad a 7-field Alpha kline to the standard 12-field Binance kline format.
+
+    Alpha kline: [openTime, open, high, low, close, baseVolume, closeTime]
+    Standard:    [openTime, open, high, low, close, baseVolume, closeTime,
+                  quoteVolume, tradeCount, takerBase, takerQuote, ignore]
+
+    quoteVolume (index 7) = baseVolume × closePrice.
+    This is an approximation; it matches how klines_quote_vols() reads vol in the notebook.
+    """
+    if len(k) < 7:
+        return k
+    quote_vol = str(float(k[5]) * float(k[4]))
+    return [k[0], k[1], k[2], k[3], k[4], k[5], k[6],
+            quote_vol, "0", "0", "0", "0"]
+
+
+def fetch_binance_alpha_klines(
+    contract_address: str,
+    chain_id: str,
+    session: requests.Session | None = None,
+    refresh: bool = False,
+    interval: str = "1d",
+    limit: int = 35,
+) -> list[list]:
+    """
+    Return klines for a Binance Alpha token (DEX, on-chain data).
+
+    Alpha tokens have no regular Binance spot market, so binance_spot_klines
+    returns []. This endpoint provides the equivalent: OHLCV history keyed by
+    contract address + chain, used as the spot-side proxy for P/S ratio scoring
+    and for direction / BTC correlation calculations.
+
+    Returned candles are padded to 12-field standard Binance kline format:
+      [openTime, open, high, low, close, baseVol, closeTime, quoteVol, 0, 0, 0, 0]
+    quoteVol = baseVol × closePrice (approximation; close enough for vol acceleration).
+
+    contract_address: raw hex address WITHOUT chain suffix (e.g. "0x8b1943...")
+    chain_id: chain as string (e.g. "56" for BSC)
+    """
+    safe_addr = contract_address.lower().replace("/", "_")
+    key = f"binance_alpha_klines_{safe_addr}_{chain_id}_{interval}"
+    if not refresh:
+        cached = _load_cache(key, _TTL["binance_alpha_klines"])
+        if cached is not None:
+            return cached
+
+    session = session or _make_session()
+    data: list[list] = []
+    try:
+        resp = _get_with_retry(
+            session, BINANCE_ALPHA_KLINES_URL,
+            params={
+                "chainId":      chain_id,
+                "tokenAddress": contract_address,
+                "interval":     interval,
+                "limit":        limit,
+                "dataType":     "aggregate",
+            },
+        )
+        raw = resp.json().get("data", {}).get("klineInfos", [])
+        if not isinstance(raw, list):
+            raw = []
+        data = [_normalize_alpha_kline(k) for k in raw if isinstance(k, list) and len(k) >= 7]
+    except Exception as exc:
+        warnings.warn(
+            f"fetch_binance_alpha_klines({contract_address}@{chain_id}) failed ({exc}); "
+            "P/S ratio and direction scores will be unavailable for this Alpha token"
+        )
+
+    _save_cache(data, key)
+    return data
 
 
 def fetch_cmc_trending(session: requests.Session | None = None,
@@ -866,15 +1074,21 @@ def fetch_all_radar(
             "risex_markets":          set[str],        # base symbols on RISEx
             "binance_futures_ticker": list[dict],      # all fapi 24hr tickers
             "binance_spot_list":      list[dict],      # bapi marketing list
-            "binance_sentiment":      dict[str, dict], # asset → sentiment metrics
-            "binance_technical":      dict[str, dict], # asset → technical metrics (1h)
-        "binance_technical_1d":   dict[str, dict], # asset → technical metrics (1d)
+            "binance_sentiment":      dict[str, dict], # symbol → sentiment metrics (Alpha remapped)
+            "binance_technical":      dict[str, dict], # symbol → technical metrics (1h, Alpha remapped)
+            "binance_technical_1d":   dict[str, dict], # symbol → technical metrics (1d, Alpha remapped)
+            "binance_alpha_ticker":   dict[str, dict], # "0xADDR@CHAIN" → {symbol, marketCap, volume24h, ...}
             "cmc_trending":           list[dict],      # [] on 500
             "cg_trending":            dict,            # {} on failure
             "cg_markets":             list[dict],      # [] on failure; top-250 by MCap
             "defillama_protocols":    list[dict],      # [] on failure
             "_fetch_errors":          dict[str, str],  # source → error for failed calls
         }
+
+    Post-fetch: sentiment/technical keys for Binance Alpha tokens arrive as
+    "0xADDRESS@CHAINID" from the Apex API. fetch_binance_alpha_ticker resolves
+    these to plain symbols; fetch_all_radar remaps the dicts after all parallel
+    fetches complete so callers always look up by symbol.
     """
     tasks: dict[str, Any] = {
         "risex_markets":          lambda: fetch_risex_markets(refresh=refresh),
@@ -883,6 +1097,7 @@ def fetch_all_radar(
         "binance_sentiment":      lambda: fetch_binance_sentiment(refresh=refresh),
         "binance_technical":      lambda: fetch_binance_technical(refresh=refresh, interval="1h"),
         "binance_technical_1d":   lambda: fetch_binance_technical(refresh=refresh, interval="1d"),
+        "binance_alpha_ticker":   lambda: fetch_binance_alpha_ticker(refresh=refresh),
         "cmc_trending":           lambda: fetch_cmc_trending(refresh=refresh, page_size=200),
         "cg_trending":            lambda: fetch_cg_trending(refresh=refresh),
         "cg_markets":             lambda: fetch_cg_markets(refresh=refresh),
@@ -908,6 +1123,20 @@ def fetch_all_radar(
                 fetch_errors[name] = str(exc)
                 results[name] = _empty_for(name)
 
+    # Remap Apex sentiment/technical keys for Alpha tokens from "0xADDR@CHAIN" → symbol.
+    # Apex endpoints currently never return Alpha tokens, but we apply the remap
+    # defensively in case they start doing so. alpha_ticker is now keyed by symbol,
+    # so build the addr→symbol map from the stored addr_key field.
+    alpha_map: dict[str, str] = {
+        info["addr_key"]: sym
+        for sym, info in results.get("binance_alpha_ticker", {}).items()
+        if info.get("addr_key")
+    }
+    if alpha_map:
+        for src in ("binance_sentiment", "binance_technical", "binance_technical_1d"):
+            orig = results.get(src, {})
+            results[src] = {alpha_map.get(k, k): v for k, v in orig.items()}
+
     results["_fetch_errors"] = fetch_errors
     if fetch_errors:
         warnings.warn(
@@ -921,7 +1150,8 @@ def _empty_for(name: str) -> Any:
     """Return a safe empty value for each result key."""
     if name == "risex_markets":
         return set()
-    if name in ("binance_sentiment", "binance_technical", "binance_technical_1d", "cg_trending"):
+    if name in ("binance_sentiment", "binance_technical", "binance_technical_1d",
+                "binance_alpha_ticker", "cg_trending"):
         return {}
     return []  # list sources
 
