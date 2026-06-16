@@ -2006,6 +2006,22 @@ function fClamp(x, theta) {
   return Math.min(1, Math.max(0, x / theta));
 }
 
+// Trapezoid: 0 at <=0.5 and >=15; 1 in [2.5, 7.5]; linear ramps
+function scorePsLevel(x) {
+  if (x === null || !Number.isFinite(x) || x <= 0.5 || x >= 15) return 0;
+  if (x >= 2.5 && x <= 7.5) return 1;
+  if (x < 2.5) return (x - 0.5) / 2.0;
+  return (15 - x) / 7.5;
+}
+
+// Trapezoid: 0 at <=0.05 and >=3.2; 1 in [0.2, 0.8]; linear ramps
+function scoreOiVol(x) {
+  if (x === null || !Number.isFinite(x) || x <= 0.05 || x >= 3.2) return 0;
+  if (x >= 0.2 && x <= 0.8) return 1;
+  if (x < 0.2) return (x - 0.05) / 0.15;
+  return (3.2 - x) / 2.4;
+}
+
 // Spearman ρ of values against time index [0..n-1]
 // max(0, ρ) clamp is applied by the OI scorer — the raw ρ is returned here
 function spearmanCorr(values) {
@@ -2231,8 +2247,8 @@ function scoreRadarPrice(dayChangeFrac, klines1h, klines1d, btcCloses) {
 }
 
 // S_vol = renorm({accel:0.50, PS:0.50})
-// s_accel = renorm({7d:0.60, 24h:0.40}) log-scaled (7d ceil=3×, 24h ceil=4× and >$10M)
-// s_PS = renorm({level:0.60, trend:0.40}) (perp/spot ratio level + trend vs 7d avg)
+// s_accel = renorm({7d:0.50, 24h:0.30, spot:0.20}) log-scaled (7d ceil=2×, 24h ceil=4× and >$10M, spot ceil=1.5×)
+// s_PS = renorm({level:0.60, trend:0.40}) (P/S trapezoid level [2.5,7.5] + trend vs 7d avg)
 function scoreRadarVol(quoteVol24h, klines1d, spotKlines1d) {
   let s_accel = null;
   if (Array.isArray(klines1d) && klines1d.length >= 5) {
@@ -2241,12 +2257,21 @@ function scoreRadarVol(quoteVol24h, klines1d, spotKlines1d) {
     const avg30 = vols.slice(-30).reduce((a, b) => a + b, 0) / Math.min(30, vols.length);
     if (avg30 > 0) {
       const avg7 = vols.slice(-7).reduce((a, b) => a + b, 0) / Math.min(7, vols.length);
-      const s7   = avg7 > 0 ? fClamp(Math.log(avg7 / avg30) / Math.log(3), 1.0) : null;
+      const s7   = avg7 > 0 ? fClamp(Math.log(avg7 / avg30) / Math.log(2), 1.0) : null;
       let s24h_a = null;
       if (Number.isFinite(quoteVol24h) && quoteVol24h > 10_000_000)
         s24h_a = fClamp(Math.log(quoteVol24h / avg30) / Math.log(4), 1.0);
-      if (s7 !== null || s24h_a !== null)
-        s_accel = renorm({ d7: s7, d24h: s24h_a }, { d7: 0.60, d24h: 0.40 });
+      // Spot-spike: 24h spot vol vs 7d spot avg
+      let sSpot = null;
+      if (Array.isArray(spotKlines1d) && spotKlines1d.length >= 8) {
+        const sv = spotKlines1d.slice(0, -1).map(k => parseFloat(k[7] || 0));
+        const spot24h = sv[sv.length - 1];
+        const spotAvg7 = sv.slice(-7).reduce((a, b) => a + b, 0) / Math.min(7, sv.length);
+        if (spot24h > 0 && spotAvg7 > 0)
+          sSpot = fClamp(Math.log(spot24h / spotAvg7) / Math.log(1.5), 1.0);
+      }
+      if (s7 !== null || s24h_a !== null || sSpot !== null)
+        s_accel = renorm({ d7: s7, d24h: s24h_a, spot: sSpot }, { d7: 0.50, d24h: 0.30, spot: 0.20 });
     }
   }
 
@@ -2257,7 +2282,7 @@ function scoreRadarVol(quoteVol24h, klines1d, spotKlines1d) {
     const spotVol24h = spotVols[spotVols.length - 1] || null;
     if (spotVol24h && spotVol24h > 0) {
       const ratioNow = quoteVol24h / spotVol24h;
-      const s_level  = fClamp(ratioNow, 1.5);
+      const s_level  = scorePsLevel(ratioNow);
       // Trend: ratio_now vs 7d avg daily ratio
       let s_trend = null;
       if (Array.isArray(klines1d) && klines1d.length >= 5) {
@@ -2281,11 +2306,11 @@ function scoreRadarVol(quoteVol24h, klines1d, spotKlines1d) {
   return renorm({ accel: s_accel, PS: s_PS }, { accel: 0.50, PS: 0.50 });
 }
 
-// S_OI = renorm({trend:0.60, mcap:0.40})
+// S_OI = renorm({trend:0.60, oiVol:0.40})
 // s_OI_trend = renorm({7d:0.40, 30d:0.60}) with max(0, rho) — declining OI clamped to 0
 // Uses coin-denominated sumOpenInterest (not USD value)
-// s_OI_mcap = fClamp(OI_notional / (MCap * 0.15))
-function scoreRadarOI(oiHist, markPrice, marketCap) {
+// s_oi_vol = scoreOiVol(OI_notional / perp_quoteVol24h) — trapezoid [0.2,0.8]
+function scoreRadarOI(oiHist, markPrice, quoteVol24h) {
   let s_OI_trend = null;
   if (Array.isArray(oiHist) && oiHist.length >= 10) {
     const sorted = [...oiHist].sort((a, b) => a.timestamp - b.timestamp);
@@ -2298,14 +2323,15 @@ function scoreRadarOI(oiHist, markPrice, marketCap) {
       s_OI_trend = renorm({ d7: s7, d30: s30 }, { d7: 0.40, d30: 0.60 });
   }
 
-  let s_OI_mcap = null;
-  if (Array.isArray(oiHist) && oiHist.length > 0 && markPrice > 0 && marketCap > 0) {
+  let s_oi_vol = null;
+  if (Array.isArray(oiHist) && oiHist.length > 0 && markPrice > 0 &&
+      Number.isFinite(quoteVol24h) && quoteVol24h > 0) {
     const lastOI = parseFloat(oiHist[oiHist.length - 1]?.sumOpenInterest || 0);
     const oiNotional = lastOI * markPrice;
-    s_OI_mcap = fClamp(oiNotional / (marketCap * 0.15), 1.0);
+    s_oi_vol = scoreOiVol(oiNotional / quoteVol24h);
   }
 
-  return renorm({ trend: s_OI_trend, mcap: s_OI_mcap }, { trend: 0.60, mcap: 0.40 });
+  return renorm({ trend: s_OI_trend, oiVol: s_oi_vol }, { trend: 0.60, oiVol: 0.40 });
 }
 
 // S_lev = renorm({fund:0.45, flip:0.35, persist:0.20})
@@ -2433,7 +2459,7 @@ function scoreRadarVolDetail(quoteVol24h, klines1d, spotKlines1d) {
       const avg7 = vols.slice(-7).reduce((a, b) => a + b, 0) / Math.min(7, vols.length);
       ratio7 = avg7 / avg30;
       ratio24 = Number.isFinite(quoteVol24h) ? quoteVol24h / avg30 : null;
-      s7 = ratio7 > 0 ? fClamp(Math.log(ratio7) / Math.log(3), 1.0) : null;
+      s7 = ratio7 > 0 ? fClamp(Math.log(ratio7) / Math.log(2), 1.0) : null;
       if (Number.isFinite(quoteVol24h) && quoteVol24h > 10_000_000 && ratio24 > 0) {
         s24h = fClamp(Math.log(ratio24) / Math.log(4), 1.0);
       }
@@ -2446,7 +2472,7 @@ function scoreRadarVolDetail(quoteVol24h, klines1d, spotKlines1d) {
     const spotVol24h = spotVols[spotVols.length - 1] || null;
     if (spotVol24h && spotVol24h > 0) {
       ratioNow = quoteVol24h / spotVol24h;
-      sLevel = fClamp(ratioNow, 1.5);
+      sLevel = scorePsLevel(ratioNow);
       if (Array.isArray(klines1d) && klines1d.length >= 5) {
         const futVols = klines1d.slice(0, -1).map(k => parseFloat(k[7] || 0));
         const n7 = Math.min(7, futVols.length, spotVols.length);
@@ -2467,20 +2493,32 @@ function scoreRadarVolDetail(quoteVol24h, klines1d, spotKlines1d) {
     }
   }
 
-  const sAccel = renorm({ d7: s7, d24h: s24h }, { d7: 0.60, d24h: 0.40 });
+  // Spot-spike for detail view
+  let sSpot = null, spotRatio = null;
+  if (Array.isArray(spotKlines1d) && spotKlines1d.length >= 8) {
+    const sv = spotKlines1d.slice(0, -1).map(k => parseFloat(k[7] || 0));
+    const spot24h = sv[sv.length - 1];
+    const spotAvg7 = sv.slice(-7).reduce((a, b) => a + b, 0) / Math.min(7, sv.length);
+    if (spot24h > 0 && spotAvg7 > 0) {
+      spotRatio = spot24h / spotAvg7;
+      sSpot = fClamp(Math.log(spotRatio) / Math.log(1.5), 1.0);
+    }
+  }
+  const sAccel = renorm({ d7: s7, d24h: s24h, spot: sSpot }, { d7: 0.50, d24h: 0.30, spot: 0.20 });
   const sPS = renorm({ level: sLevel, trend: sTrend }, { level: 0.60, trend: 0.40 });
   return {
     score: renorm({ accel: sAccel, ps: sPS }, { accel: 0.50, ps: 0.50 }),
     subs: [
-      radarSub('7d Volume Accel', s7, 0.30, Number.isFinite(ratio7) ? ratio7.toFixed(2) + 'x 30d' : '—', 'Log-scaled, full score at 3x'),
-      radarSub('24h Volume Accel', s24h, 0.20, Number.isFinite(ratio24) ? ratio24.toFixed(2) + 'x 30d' : '—', 'Log-scaled, full score at 4x with >$10M floor'),
-      radarSub('Perp/Spot Level', sLevel, 0.30, ratioNow !== null ? ratioNow.toFixed(2) + 'x' : '—', 'Full score at 1.5x perp/spot'),
+      radarSub('7d Volume Accel', s7, 0.25, Number.isFinite(ratio7) ? ratio7.toFixed(2) + 'x 30d' : '—', 'Log-scaled, full score at 2x'),
+      radarSub('24h Volume Accel', s24h, 0.15, Number.isFinite(ratio24) ? ratio24.toFixed(2) + 'x 30d' : '—', 'Log-scaled, full score at 4x with >$10M floor'),
+      radarSub('Spot Spike', sSpot, 0.10, spotRatio !== null ? spotRatio.toFixed(2) + 'x 7d avg' : '—', 'Spot vol surge vs 7d avg, full score at 1.5x'),
+      radarSub('Perp/Spot Level', sLevel, 0.30, ratioNow !== null ? ratioNow.toFixed(2) + 'x' : '—', 'Trapezoid: full in [2.5,7.5], zero at ≤0.5 and ≥15'),
       radarSub('Perp/Spot Trend', sTrend, 0.20, ratioTrend !== null ? fmtPct(ratioTrend) : '—', 'Current ratio versus 7d average ratio'),
     ],
   };
 }
 
-function scoreRadarOIDetail(oiHist, markPrice, marketCap) {
+function scoreRadarOIDetail(oiHist, markPrice, quoteVol24h) {
   let s7 = null, s30 = null, rho7 = null, rho30 = null;
   if (Array.isArray(oiHist) && oiHist.length >= 10) {
     const sorted = [...oiHist].sort((a, b) => a.timestamp - b.timestamp);
@@ -2491,20 +2529,21 @@ function scoreRadarOIDetail(oiHist, markPrice, marketCap) {
     s30 = rho30 !== null ? Math.max(0, rho30) : null;
   }
 
-  let sMcap = null, oiNotional = null, oiMcap = null;
-  if (Array.isArray(oiHist) && oiHist.length > 0 && markPrice > 0 && marketCap > 0) {
+  let sOiVol = null, oiNotional = null, oiVolRatio = null;
+  if (Array.isArray(oiHist) && oiHist.length > 0 && markPrice > 0 &&
+      Number.isFinite(quoteVol24h) && quoteVol24h > 0) {
     const lastOI = parseFloat(oiHist[oiHist.length - 1]?.sumOpenInterest || 0);
     oiNotional = lastOI * markPrice;
-    oiMcap = oiNotional / marketCap;
-    sMcap = fClamp(oiMcap / 0.15, 1.0);
+    oiVolRatio = oiNotional / quoteVol24h;
+    sOiVol = scoreOiVol(oiVolRatio);
   }
 
   return {
-    score: renorm({ d7: s7, d30: s30, mcap: sMcap }, { d7: 0.24, d30: 0.36, mcap: 0.40 }),
+    score: renorm({ d7: s7, d30: s30, oiVol: sOiVol }, { d7: 0.24, d30: 0.36, oiVol: 0.40 }),
     subs: [
       radarSub('OI Trend 7d', s7, 0.24, rho7 !== null ? `rho=${rho7.toFixed(2)}` : '—', 'Spearman OI trend over recent hourly values'),
       radarSub('OI Trend 30d', s30, 0.36, rho30 !== null ? `rho=${rho30.toFixed(2)}` : '—', 'Spearman OI trend over full 30d window'),
-      radarSub('OI / MCap', sMcap, 0.40, oiMcap !== null ? fmtPct(oiMcap) : (oiNotional ? fmtBig(oiNotional) : '—'), 'Full score when OI notional reaches 15% of market cap'),
+      radarSub('OI / Vol', sOiVol, 0.40, oiVolRatio !== null ? oiVolRatio.toFixed(3) + 'x' : (oiNotional ? fmtBig(oiNotional) : '—'), 'Trapezoid: full in [0.2,0.8], zero at ≤0.05 and ≥3.2'),
     ],
   };
 }
@@ -2693,7 +2732,7 @@ async function loadDetailRadar(cgId, symbol) {
   const att   = scoreRadarAtt(sentMap[symbol], tech1hMap[symbol], tech1dMap[symbol]);
   const price = scoreRadarPrice(dayChangeFrac, klines1h, klines1d, btcCloses);
   const vol   = scoreRadarVol(quoteVol, klines1d, spotKlines);
-  const oi    = scoreRadarOI(oiHist, markPrice, null);
+  const oi    = scoreRadarOI(oiHist, markPrice, quoteVol);
   const lev   = scoreRadarLev(funding, Number.isFinite(lastFR) ? lastFR : null);
   const R     = computeRadarR({ att, price, vol, oi, lev });
 
@@ -2885,7 +2924,7 @@ async function loadListingRadar(force = false, options = {}) {
         const attD   = scoreRadarAttDetail(sentMap[t.symbol], tech1hMap[t.symbol], tech1dMap[t.symbol]);
         const priceD = scoreRadarPriceDetail(dayChangeFrac, klines1h, klines1d, btcCloses);
         const volD   = scoreRadarVolDetail(t.quoteVol24h, klines1d, spotKlines);
-        const oiD    = scoreRadarOIDetail(oiHist, t.lastPrice, t.marketCap);
+        const oiD    = scoreRadarOIDetail(oiHist, t.lastPrice, t.quoteVol24h);
         const levD   = scoreRadarLevDetail(funding, Number.isFinite(t.lastFR) ? t.lastFR : null);
         const att   = attD.score;
         const price = priceD.score;
@@ -2946,7 +2985,7 @@ function radarScoreColor(R) {
 }
 
 function radarSignalRows(t) {
-  const oiMcap = t.marketCap && t.oiUsd ? t.oiUsd / t.marketCap : null;
+  const oiVol = t.vol24h && t.oiUsd ? t.oiUsd / t.vol24h : null;
   return [
     ['Binance Perp', t.perpSym || '—'],
     ['Price', t.lastPrice > 0 ? fmtPrice(t.lastPrice) : '—'],
@@ -2954,7 +2993,7 @@ function radarSignalRows(t) {
     ['Perp Vol 24h', t.vol24h > 0 ? fmtBig(t.vol24h) : '—'],
     ['Open Interest', t.oiUsd > 0 ? fmtBig(t.oiUsd) : '—'],
     ['Market Cap', t.marketCap > 0 ? fmtBig(t.marketCap) : '—'],
-    ['OI / MCap', oiMcap !== null ? fmtPct(oiMcap) : '—'],
+    ['OI / Vol', oiVol !== null ? oiVol.toFixed(3) + 'x' : '—'],
     ['Funding', Number.isFinite(t.lastFR) ? fmtFunding(t.lastFR) : '—'],
     ['RISEx Status', t.alreadyListed ? 'Already listed' : 'Not listed'],
   ];

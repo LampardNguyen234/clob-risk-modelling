@@ -46,7 +46,9 @@ import requests
 # Endpoint URLs
 # ---------------------------------------------------------------------------
 
-RISEX_MARKETS_URL       = "https://api.rise.trade/v1/markets"
+RISEX_MARKETS_URL              = "https://api.rise.trade/v1/markets"
+LIGHTER_ORDER_BOOK_DETAILS_URL = "https://mainnet.zklighter.elliot.ai/api/v1/orderBookDetails"
+HYPERLIQUID_INFO_URL           = "https://api.hyperliquid.xyz/info"
 
 _FAPI                   = "https://fapi.binance.com"
 BINANCE_FAPI_TICKER     = f"{_FAPI}/fapi/v1/ticker/24hr"
@@ -90,6 +92,8 @@ _TTL: dict[str, int] = {
     "cg_trending":            600,
     "cg_markets":             600,
     "defillama_protocols":    1800,
+    "lighter_markets":        600,
+    "hyperliquid_markets":    600,
     # per-symbol keys
     "binance_oi_hist":        300,
     "binance_klines":         3600,
@@ -302,6 +306,84 @@ def fetch_risex_markets(session: requests.Session | None = None,
                    if "base_asset_symbol" in m}
     except Exception as exc:
         warnings.warn(f"fetch_risex_markets failed ({exc}); returning empty set")
+        symbols = set()
+
+    _save_cache(sorted(symbols), key)
+    return symbols
+
+
+import re as _re
+
+# Lighter uses "1000X" / "1000000X" prefixes; Hyperliquid uses "k" prefix —
+# both map to the plain symbol used elsewhere in this pipeline.
+_PERP_DEX_ALIASES: dict[str, str] = {
+    # Hyperliquid k-prefix → plain
+    "kBONK": "BONK", "kDOGS": "DOGS", "kFLOKI": "FLOKI",
+    "kLUNC": "LUNC", "kNEIRO": "NEIRO", "kPEPE": "PEPE", "kSHIB": "SHIB",
+}
+_LEADING_DIGITS = _re.compile(r"^\d+")
+
+
+def _normalize_perp_dex_sym(sym: str) -> str:
+    """Strip leading numeric multiplier (1000X → X) and apply known aliases."""
+    if sym in _PERP_DEX_ALIASES:
+        return _PERP_DEX_ALIASES[sym]
+    # e.g. "1000PEPE" → "PEPE", "1000000MOG" → "MOG"
+    return _LEADING_DIGITS.sub("", sym) or sym
+
+
+def fetch_lighter_markets(session: requests.Session | None = None,
+                          refresh: bool = False) -> set[str]:
+    """Return base symbols of active perp markets on Lighter."""
+    key = "lighter_markets"
+    if not refresh:
+        cached = _load_cache(key, _TTL[key])
+        if cached is not None:
+            return set(cached)
+
+    session = session or _make_session()
+    try:
+        resp = _get_with_retry(session, LIGHTER_ORDER_BOOK_DETAILS_URL)
+        books = resp.json().get("order_book_details", [])
+        symbols = {
+            _normalize_perp_dex_sym(b["symbol"])
+            for b in books
+            if b.get("market_type") == "perp" and b.get("status") == "active"
+        }
+    except Exception as exc:
+        warnings.warn(f"fetch_lighter_markets failed ({exc}); returning empty set")
+        symbols = set()
+
+    _save_cache(sorted(symbols), key)
+    return symbols
+
+
+def fetch_hyperliquid_markets(session: requests.Session | None = None,
+                              refresh: bool = False) -> set[str]:
+    """Return base symbols of active perp markets on Hyperliquid."""
+    key = "hyperliquid_markets"
+    if not refresh:
+        cached = _load_cache(key, _TTL[key])
+        if cached is not None:
+            return set(cached)
+
+    session = session or _make_session()
+    try:
+        resp = session.post(
+            HYPERLIQUID_INFO_URL,
+            json={"type": "meta"},
+            timeout=10,
+        )
+        resp.raise_for_status()
+        universe = resp.json().get("universe", [])
+        symbols = set()
+        for asset in universe:
+            raw = asset.get("name", "")
+            sym = _normalize_perp_dex_sym(raw)
+            if sym:
+                symbols.add(sym)
+    except Exception as exc:
+        warnings.warn(f"fetch_hyperliquid_markets failed ({exc}); returning empty set")
         symbols = set()
 
     _save_cache(sorted(symbols), key)
@@ -1072,6 +1154,8 @@ def fetch_all_radar(
     Returns:
         {
             "risex_markets":          set[str],        # base symbols on RISEx
+            "lighter_markets":        set[str],        # base symbols with active Lighter perp
+            "hyperliquid_markets":    set[str],        # base symbols with active Hyperliquid perp
             "binance_futures_ticker": list[dict],      # all fapi 24hr tickers
             "binance_spot_list":      list[dict],      # bapi marketing list
             "binance_sentiment":      dict[str, dict], # symbol → sentiment metrics (Alpha remapped)
@@ -1092,6 +1176,8 @@ def fetch_all_radar(
     """
     tasks: dict[str, Any] = {
         "risex_markets":          lambda: fetch_risex_markets(refresh=refresh),
+        "lighter_markets":        lambda: fetch_lighter_markets(refresh=refresh),
+        "hyperliquid_markets":    lambda: fetch_hyperliquid_markets(refresh=refresh),
         "binance_futures_ticker": lambda: fetch_binance_futures_ticker(refresh=refresh),
         "binance_spot_list":      lambda: fetch_binance_spot_list(refresh=refresh),
         "binance_sentiment":      lambda: fetch_binance_sentiment(refresh=refresh),
@@ -1148,7 +1234,7 @@ def fetch_all_radar(
 
 def _empty_for(name: str) -> Any:
     """Return a safe empty value for each result key."""
-    if name == "risex_markets":
+    if name in ("risex_markets", "lighter_markets", "hyperliquid_markets"):
         return set()
     if name in ("binance_sentiment", "binance_technical", "binance_technical_1d",
                 "binance_alpha_ticker", "cg_trending"):
